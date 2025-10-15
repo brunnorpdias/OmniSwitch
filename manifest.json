@@ -1,0 +1,11 @@
+{
+	"id": "omniswitch",
+	"name": "Omni Switch",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Consolidates improved commands and search in one place",
+	"author": "brunnorpdias",
+	"authorUrl": "",
+	"fundingUrl": "",
+	"isDesktopOnly": true
+}

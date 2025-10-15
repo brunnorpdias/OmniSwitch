@@ -1,0 +1,25 @@
+# Editors & IDEs
+.vscode/
+.idea/
+*.iml
+
+# Dependencies & build output
+node_modules/
+coverage/
+.turbo/
+.cache/
+
+# Logs & runtime artifacts
+*.log
+*.tmp
+
+# Build artifacts
+main.js
+*.map
+
+# OS files
+.DS_Store
+
+# Env files
+.env
+.env.local
