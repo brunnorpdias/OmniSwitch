@@ -6,12 +6,13 @@ import {
 	Notice,
 	Platform,
 	TFile,
+	TFolder,
 	WorkspaceLeaf,
 	prepareFuzzySearch,
 	type Instruction,
 	type SearchResult,
 } from "obsidian";
-import type { SearchItem, HeadingSearchItem, FileSearchItem } from "./search-types";
+import type { SearchItem, HeadingSearchItem, FileSearchItem, FolderSearchItem } from "./search/types";
 import { getCommandManager } from "./obsidian-helpers";
 import {
 	collectFileLeaves,
@@ -22,12 +23,13 @@ import {
 	resolveAttachmentCategory,
 	type OmniSwitchMode,
 	type PrefixDetectionResult,
-} from "./search-utils";
+} from "./search/utils";
 
 export interface OmniSwitchModalOptions {
 	initialMode?: OmniSwitchMode;
 	extensionFilter?: string | null;
 	initialQuery?: string;
+	initialDirectoryTrail?: string[];
 }
 
 type ItemSupplier = () => SearchItem[];
@@ -38,6 +40,9 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	private readonly initialQuery: string;
 	private isProgrammaticInput = false;
 	private pendingNewLeaf = false;
+	private directoryStack: TFolder[] = [];
+	private modeLabelEl: HTMLSpanElement | null = null;
+	private clearButtonObserver: MutationObserver | null = null;
 
 	private readonly handleInput = (_event: Event): void => {
 		if (this.isProgrammaticInput) {
@@ -48,9 +53,14 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		const rawValue = this.inputEl.value;
 		const detection = this.detectPrefix(rawValue);
 		if (detection.prefixApplied) {
+			const previousMode = this.mode;
+			if (previousMode !== detection.mode) {
+				this.handleModeTransition(previousMode, detection.mode);
+			}
 			this.mode = detection.mode;
 			this.extensionFilter = detection.extensionFilter;
 			this.updateModeUI();
+			this.updateModeLabel();
 			this.inputEl.value = detection.search;
 			this.inputEl.setSelectionRange(detection.search.length, detection.search.length);
 			this.refreshSuggestions();
@@ -59,6 +69,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 
 		// When the user types normally, ensure the current mode styling stays in sync.
 		this.updateModeUI();
+		this.updateModeLabel();
 	};
 
 	private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -74,6 +85,16 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		}
 
 		if (event.key === "Backspace") {
+			if (this.mode === "directories"
+				&& this.inputEl.selectionStart === 0
+				&& this.inputEl.selectionEnd === 0
+				&& this.inputEl.value.length === 0) {
+				event.preventDefault();
+				event.stopPropagation();
+				event.stopImmediatePropagation?.();
+				this.exitDirectoryLevel(true);
+				return;
+			}
 			if ((this.mode !== "files" || this.extensionFilter)
 				&& this.inputEl.selectionStart === 0
 				&& this.inputEl.selectionEnd === 0
@@ -117,11 +138,15 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		this.mode = options.initialMode ?? "files";
 		this.extensionFilter = options.extensionFilter ?? null;
 		this.initialQuery = options.initialQuery ?? "";
+		if (this.mode === "directories") {
+			this.initializeDirectoryTrail(options.initialDirectoryTrail);
+		}
 	}
 
 	onOpen(): void {
 		super.onOpen();
 		this.modalEl.classList.add("omniswitch-modal");
+		this.removeCloseButton();
 		this.setupInputChrome();
 
 		this.inputEl.value = this.initialQuery;
@@ -135,6 +160,8 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	onClose(): void {
 		this.inputEl.removeEventListener("input", this.handleInput, true);
 		this.inputEl.removeEventListener("keydown", this.handleKeyDown, true);
+		this.clearButtonObserver?.disconnect();
+		this.clearButtonObserver = null;
 		super.onClose();
 	}
 
@@ -143,6 +170,9 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	}
 
 	getSuggestions(query: string): FuzzyMatch<SearchItem>[] {
+		if (this.mode === "directories") {
+			return this.getDirectorySuggestions(query);
+		}
 		const items = this.filterItems(this.getItems(), this.mode, this.extensionFilter);
 		const trimmedLeading = query.trimStart();
 		if (this.mode === "files") {
@@ -153,6 +183,9 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				return [];
 			}
 			if (trimmedLeading.startsWith("#") && !trimmedLeading.startsWith("# ")) {
+				return [];
+			}
+			if (trimmedLeading.startsWith("/") && !trimmedLeading.startsWith("/ ")) {
 				return [];
 			}
 		}
@@ -192,6 +225,43 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return matches;
 	}
 
+	private getDirectorySuggestions(query: string): FuzzyMatch<SearchItem>[] {
+		const candidates = this.getDirectoryCandidates();
+		if (candidates.length === 0) {
+			return [];
+		}
+
+		const normalizedQuery = query.trim();
+		const effectiveQuery = normalizedQuery.length > 0 ? normalizedQuery : query;
+
+		if (effectiveQuery.length === 0) {
+			return this.sortDirectoryItems(candidates).map((item) => ({ item, match: this.emptyMatch() }));
+		}
+
+		const fuzzy = prepareFuzzySearch(effectiveQuery);
+		const matches: FuzzyMatch<SearchItem>[] = [];
+		for (const item of candidates) {
+			const match = fuzzy(this.getItemText(item));
+			if (match) {
+				matches.push({ item, match });
+			}
+		}
+		matches.sort((a, b) => {
+			const priorityDiff = this.getDirectoryItemPriority(a.item) - this.getDirectoryItemPriority(b.item);
+			if (priorityDiff !== 0) {
+				return priorityDiff;
+			}
+			const scoreDiff = b.match.score - a.match.score;
+			if (scoreDiff !== 0) {
+				return scoreDiff;
+			}
+			const textA = this.getItemText(a.item);
+			const textB = this.getItemText(b.item);
+			return textA.localeCompare(textB);
+		});
+		return matches;
+	}
+
 	getItemText(item: SearchItem): string {
 		switch (item.type) {
 			case "file":
@@ -200,7 +270,132 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				return `${item.command.name} (${item.command.id})`;
 			case "heading":
 				return `${item.file.path}#${item.heading.heading}`;
+			case "folder":
+				return this.folderPath(item.folder);
 		}
+	}
+
+	private sortDirectoryItems(items: SearchItem[]): SearchItem[] {
+		return [...items].sort((a, b) => {
+			const priorityDiff = this.getDirectoryItemPriority(a) - this.getDirectoryItemPriority(b);
+			if (priorityDiff !== 0) {
+				return priorityDiff;
+			}
+			const textA = this.getItemText(a);
+			const textB = this.getItemText(b);
+			return textA.localeCompare(textB);
+		});
+	}
+
+	private getDirectoryItemPriority(item: SearchItem): number {
+		if (item.type === "folder") {
+			return 0;
+		}
+		if (item.type === "file") {
+			return 1;
+		}
+		return 2;
+	}
+
+	private getDirectoryCandidates(): SearchItem[] {
+		const allItems = this.getItems();
+		if (this.directoryStack.length === 0) {
+			const rootPath = "/";
+			return allItems.filter((item): item is FolderSearchItem => {
+				if (item.type !== "folder") {
+					return false;
+				}
+				const parentPath = this.folderParentPath(item.folder.parent ?? null);
+				return parentPath === rootPath;
+			});
+		}
+
+		const currentFolder = this.getCurrentDirectory();
+		if (!currentFolder) {
+			return [];
+		}
+		const currentPath = this.folderPath(currentFolder);
+
+		const results: SearchItem[] = [];
+		for (const item of allItems) {
+			if (item.type === "folder") {
+				if (item.folder.isRoot()) {
+					continue;
+				}
+				const parentPath = this.folderParentPath(item.folder.parent ?? null);
+				if (parentPath === currentPath) {
+					results.push(item);
+				}
+				continue;
+			}
+
+			if (item.type === "file") {
+				const parentPath = this.folderParentPath(item.file.parent ?? null);
+				if (parentPath === currentPath) {
+					results.push(item);
+				}
+			}
+		}
+		return results;
+	}
+
+	private initializeDirectoryTrail(trail: string[] | undefined): void {
+		this.directoryStack = [];
+		if (!trail || trail.length === 0) {
+			return;
+		}
+		for (const path of trail) {
+			const folder = this.getFolderByPath(path);
+			if (!folder) {
+				break;
+			}
+			if (folder.isRoot()) {
+				continue;
+			}
+			this.directoryStack.push(folder);
+		}
+	}
+
+	private getCurrentDirectory(): TFolder | null {
+		if (this.directoryStack.length === 0) {
+			return null;
+		}
+		return this.directoryStack[this.directoryStack.length - 1] ?? null;
+	}
+
+	private folderPath(folder: TFolder): string {
+		const path = folder.path;
+		if (!path || path.length === 0) {
+			return "/";
+		}
+		return path;
+	}
+
+	private folderParentPath(folder: TFolder | null): string {
+		if (!folder) {
+			return "/";
+		}
+		return this.folderPath(folder);
+	}
+
+	private getFolderByPath(path: string | undefined): TFolder | null {
+		if (!path || path === "/" || path.length === 0) {
+			return this.app.vault.getRoot();
+		}
+		const abstract = this.app.vault.getAbstractFileByPath(path);
+		return abstract instanceof TFolder ? abstract : null;
+	}
+
+	private formatFolderDisplayPath(folder: TFolder): string {
+		if (folder.isRoot()) {
+			return "/";
+		}
+		const normalized = folder.path.replace(/\\/g, "/");
+		return `/${normalized}/`;
+	}
+
+	private getFolderTitle(folder: TFolder): string {
+		return folder.isRoot() ? "/" : folder.name;
 	}
 
 	renderSuggestion(result: FuzzyMatch<SearchItem>, el: HTMLElement): void {
@@ -217,7 +412,12 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		switch (item.type) {
 			case "file": {
 				title.setText(item.file.basename);
-				subtitle.setText(this.getDirectoryLabel(item.file));
+				if (this.mode === "directories") {
+					subtitle.empty();
+					subtitle.addClass("omniswitch-suggestion__subtitle--hidden");
+				} else {
+					subtitle.setText(this.getDirectoryLabel(item.file));
+				}
 				break;
 			}
 			case "command": {
@@ -231,6 +431,12 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				subtitle.setText(item.file.path);
 				break;
 			}
+			case "folder": {
+				title.setText(`📂  ${this.getFolderTitle(item.folder)}`);
+				subtitle.empty();
+				subtitle.addClass("omniswitch-suggestion__subtitle--hidden");
+				break;
+			}
 		}
 
 		const extensionLabel = this.getExtensionLabel(item);
@@ -239,8 +445,27 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		}
 	}
 
+	selectSuggestion(result: FuzzyMatch<SearchItem>, evt: MouseEvent | KeyboardEvent): void {
+		if (this.mode === "directories" && result.item.type === "folder") {
+			this.pendingNewLeaf = false;
+			this.enterDirectory(result.item.folder);
+			return;
+		}
+		super.selectSuggestion(result, evt);
+	}
+
 	async onChooseItem(item: SearchItem, evt: MouseEvent | KeyboardEvent): Promise<void> {
-		const openInNewPane = this.shouldOpenInNewLeaf(evt);
+		if (item.type === "folder") {
+			this.pendingNewLeaf = false;
+			if (this.mode === "directories") {
+				this.enterDirectory(item.folder);
+			} else {
+				new Notice("Folder navigation is only available in folder mode.");
+			}
+			return;
+		}
+
+		const openInNewPane = this.shouldOpenInNewLeaf(evt, item);
 
 		switch (item.type) {
 			case "file":
@@ -264,19 +489,90 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			return;
 		}
 		parent.classList.add("omniswitch-input-container");
+		if (!this.modeLabelEl) {
+			this.modeLabelEl = parent.createSpan({ cls: "omniswitch-mode-pill" });
+			this.modeLabelEl.textContent = this.modeLabelFor(this.mode);
+		} else {
+			this.updateModeLabel();
+		}
 		this.inputEl.classList.add("omniswitch-input");
+		this.removeSearchClearButton(parent);
+		this.observeSearchClearButton(parent);
 	}
 
+	private removeCloseButton(): void {
+		const closeButtons = this.modalEl.querySelectorAll<HTMLElement>(".modal-close-button, .modal-close-x, button[aria-label='Close']");
+		closeButtons.forEach((button) => button.remove());
+	}
+
+	private removeSearchClearButton(container: HTMLElement): void {
+		const clearButton = container.querySelector<HTMLElement>(".search-input-clear-button");
+		clearButton?.remove();
+	}
+
+	private observeSearchClearButton(container: HTMLElement): void {
+		this.clearButtonObserver?.disconnect();
+		this.clearButtonObserver = new MutationObserver(() => {
+			this.removeSearchClearButton(container);
+		});
+		this.clearButtonObserver.observe(container, { childList: true, subtree: true });
+	}
 	private detectPrefix(raw: string): PrefixDetectionResult {
 		return detectPrefix(raw, this.mode, this.extensionFilter);
+	}
+
+	private handleModeTransition(previous: OmniSwitchMode, next: OmniSwitchMode): void {
+		if (previous === "directories" || next === "directories") {
+			this.directoryStack = [];
+		}
+		this.updateModeLabel();
+	}
+
+	private exitDirectoryLevel(clearQuery: boolean): void {
+		if (this.mode !== "directories") {
+			this.resetToDefaultMode(clearQuery);
+			return;
+		}
+		if (this.directoryStack.length === 0) {
+			this.resetToDefaultMode(clearQuery);
+			return;
+		}
+		this.directoryStack.pop();
+		this.onDirectoryContextChanged(clearQuery);
+	}
+
+	private enterDirectory(folder: TFolder): void {
+		if (this.mode !== "directories") {
+			return;
+		}
+		const current = this.getCurrentDirectory();
+		if (current && current.path === folder.path) {
+			return;
+		}
+		this.directoryStack.push(folder);
+		this.onDirectoryContextChanged(true);
+	}
+
+	private onDirectoryContextChanged(clearQuery: boolean): void {
+		this.updateModeUI();
+		this.updateModeLabel();
+		if (clearQuery) {
+			this.clearQuery();
+		} else {
+			this.refreshSuggestions();
+		}
 	}
 
 	private resetToDefaultMode(clearQuery = false): void {
 		if (this.mode === "files" && !this.extensionFilter) {
 			return;
 		}
+		const previousMode = this.mode;
 		this.mode = "files";
 		this.extensionFilter = null;
+		if (previousMode !== "files") {
+			this.handleModeTransition(previousMode, "files");
+		}
 		this.updateModeUI();
 		if (clearQuery) {
 			this.clearQuery();
@@ -325,11 +621,17 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				this.setInstructions(this.openInstructions());
 				this.emptyStateText = "No headings found";
 				break;
+			case "directories": {
+				this.setPlaceholder(this.directoryPlaceholder());
+				this.setInstructions(this.directoryInstructions());
+				this.emptyStateText = this.directoryStack.length > 0 ? "No items in folder" : "No folders found";
+				break;
+			}
 		}
 	}
 
 	private applyModeClass(): void {
-		const classes: OmniSwitchMode[] = ["files", "commands", "attachments", "headings"];
+		const classes: OmniSwitchMode[] = ["files", "commands", "attachments", "headings", "directories"];
 		for (const mode of classes) {
 			this.modalEl.classList.remove(`omniswitch-mode-${mode}`);
 		}
@@ -342,6 +644,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			{ command: this.newTabShortcutLabel(), purpose: "new tab" },
 			{ command: "> ", purpose: "commands" },
 			{ command: "!(ext/category)", purpose: "attachments" },
+			{ command: "/ ", purpose: "folders" },
 			{ command: "# ", purpose: "headings" },
 		];
 	}
@@ -351,6 +654,60 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			{ command: "enter", purpose: "open" },
 			{ command: this.newTabShortcutLabel(), purpose: "new tab" },
 		];
+	}
+
+	private directoryInstructions(): Instruction[] {
+		const instructions: Instruction[] = [
+			{ command: "enter", purpose: this.directoryStack.length > 0 ? "open" : "enter" },
+		];
+
+		if (this.directoryViewHasFiles()) {
+			instructions.push({ command: this.newTabShortcutLabel(), purpose: "new tab" });
+		}
+
+		instructions.push({ command: "backspace", purpose: this.directoryStack.length > 0 ? "up" : "exit" });
+
+		return instructions;
+	}
+
+	private directoryPlaceholder(): string {
+		const current = this.getCurrentDirectory();
+		if (!current) {
+			return "Browse folders";
+		}
+		const path = this.formatFolderDisplayPath(current);
+		return `Searching in folder "${path}"`;
+	}
+
+	private updateModeLabel(): void {
+		if (!this.modeLabelEl) {
+			return;
+		}
+		this.modeLabelEl.textContent = this.modeLabelFor(this.mode);
+	}
+
+	private modeLabelFor(mode: OmniSwitchMode): string {
+		switch (mode) {
+			case "files":
+				return "Notes";
+			case "commands":
+				return "Commands";
+			case "attachments":
+				return "Attachments";
+			case "directories":
+				return "Folders";
+			case "headings":
+				return "Headings";
+			default:
+				return (mode as string).toUpperCase();
+		}
+	}
+
+	private directoryViewHasFiles(): boolean {
+		if (this.mode !== "directories") {
+			return false;
+		}
+		return this.getDirectoryCandidates().some((item) => item.type === "file");
 	}
 
 	private filterItems(items: SearchItem[], mode: OmniSwitchMode, extensionFilter: string | null): SearchItem[] {
@@ -426,7 +783,12 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return extension.toLowerCase();
 	}
 
-	private shouldOpenInNewLeaf(evt: MouseEvent | KeyboardEvent): boolean {
+	private shouldOpenInNewLeaf(evt: MouseEvent | KeyboardEvent, item: SearchItem): boolean {
+		if (item.type === "folder") {
+			this.pendingNewLeaf = false;
+			return false;
+		}
+
 		if (this.pendingNewLeaf) {
 			this.pendingNewLeaf = false;
 			return true;
