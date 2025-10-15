@@ -1,5 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { formatExcludedPaths, parseExcludedPaths, type OmniSwitchSettings } from "./settings";
+import { formatExcludedPaths, parseExcludedPaths, type OmniSwitchSettings } from "./index";
 
 interface SettingsHost {
 	settings: OmniSwitchSettings;

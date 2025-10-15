@@ -2,9 +2,11 @@
 
 OmniSwitch replaces the sample-plugin boilerplate with a fast vault-wide switcher that keeps your keyboard at the centre of everything. From a single command (`Cmd/Ctrl + K`) you can:
 
-- Jump to notes, headings, attachments, and commands with fuzzy search.
-- Limit results on the fly with lightweight prefixes (`>`, `#`, `!`).
+- Jump to notes, headings, attachments, commands, and folders with fuzzy search.
+- Limit results on the fly with lightweight prefixes (`/`, `>`, `#`, `!`).
 - Open existing tabs instead of duplicating them, or spawn new panes with `Cmd/Ctrl + Enter`.
+- Browse folders inline with `/ `: drill into directories, open their files, and step back with `Backspace`.
+- Follow the active mode from the pill label beside the input (Notes, Commands, Attachments, Folders, Headings).
 - Log the currently open editor leaves to the console for debugging complex layouts.
 
 The plugin automatically ignores Obsidian accessory panes (outline, backlinks, etc.) so focusing an already open note always returns to the correct editor.
@@ -18,6 +20,7 @@ Open the switcher with **Cmd/Ctrl + K** *(command id: `omniswitch-open`)* and us
 | *(none)* | Notes | Markdown notes and recents. |
 | `# ` | Headings | Headings from Markdown notes. |
 | `> ` | Commands | Vault commands (same list as Command Palette). |
+| `/ ` | Folders | Vault folders; press Enter to drill into the selected directory. |
 | `! ` | Attachments | All non-note attachments. |
 | `!image ` | Attachments | Image files (`avif`, `bmp`, `gif`, `jpeg`, `jpg`, `png`, `svg`, `webp`). |
 | `!audio ` | Attachments | Audio files (`flac`, `m4a`, `mp3`, `ogg`, `wav`, `webm`, `3gp`). |
@@ -29,7 +32,7 @@ Open the switcher with **Cmd/Ctrl + K** *(command id: `omniswitch-open`)* and us
 - **Enter** – Open the selected entry (reuses existing tabs when available).
 - **Cmd/Ctrl + Enter** – Open in a new pane.
 - **Ctrl + J / Ctrl + K** – Move selection down/up.
-- **Backspace** – Leave the current mode when the search box is empty.
+- **Backspace** – Leave the current mode when the search box is empty. In folder mode it moves up one directory level before returning to Notes.
 
 ## Registered Commands
 
@@ -48,10 +51,15 @@ Open the switcher with **Cmd/Ctrl + K** *(command id: `omniswitch-open`)* and us
 ├─ docs/                 # Additional documentation (moved from root)
 ├─ scripts/              # Repository scripts (version bump)
 ├─ src/
+│  ├─ search/
+│  │  ├─ index.ts        # Vault indexing and cache refresh
+│  │  ├─ types.ts        # Shared search item definitions
+│  │  └─ utils.ts        # Prefix detection & workspace helpers
+│  ├─ settings/
+│  │  ├─ index.ts        # Settings schema and migration helpers
+│  │  └─ tab.ts          # Settings tab UI
 │  ├─ omni-switch-modal.ts   # Core modal & UI logic
-│  ├─ search-index.ts        # Vault indexing and cache refresh
-│  ├─ search-utils.ts        # Shared prefix/category helpers
-│  ├─ settings*.ts           # Settings types and tab
+│  ├─ obsidian-helpers.ts    # Command palette utilities
 │  └─ ...
 ├─ tests/               # Vitest suites for helpers
 ├─ main.ts              # Obsidian entrypoint
