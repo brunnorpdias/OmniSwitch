@@ -1,7 +1,7 @@
-import { App, TFile } from "obsidian";
-import type { OmniSwitchSettings } from "./settings";
-import { SearchItem, CommandSearchItem, FileSearchItem, HeadingSearchItem } from "./search-types";
-import { getCommandManager } from "./obsidian-helpers";
+import { App, TFile, TFolder } from "obsidian";
+import type { OmniSwitchSettings } from "../settings";
+import { SearchItem, CommandSearchItem, FileSearchItem, HeadingSearchItem, FolderSearchItem } from "./types";
+import { getCommandManager } from "../obsidian-helpers";
 
 interface ExclusionMatcher {
 	exact: string;
@@ -53,6 +53,27 @@ export class SearchIndex {
 				command,
 			};
 			items.push(commandItem);
+		}
+
+		const folders: TFolder[] = [];
+		const appendFolders = (folder: TFolder): void => {
+			if (!isExcluded(folder.path, this.matchers)) {
+				folders.push(folder);
+			}
+			for (const child of folder.children) {
+				if (child instanceof TFolder) {
+					appendFolders(child);
+				}
+			}
+		};
+		appendFolders(this.app.vault.getRoot());
+
+		for (const folder of folders) {
+			const folderItem: FolderSearchItem = {
+				type: "folder",
+				folder,
+			};
+			items.push(folderItem);
 		}
 
 		const allFiles = this.app.vault.getAllLoadedFiles();

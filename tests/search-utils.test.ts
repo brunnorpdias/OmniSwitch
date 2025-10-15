@@ -4,7 +4,7 @@ import {
 	isNoteExtension,
 	matchesAttachmentExtension,
 	type OmniSwitchMode,
-} from "../src/search-utils";
+} from "../src/search/utils";
 
 describe("detectPrefix", () => {
 	const defaultMode: OmniSwitchMode = "files";
@@ -26,6 +26,26 @@ describe("detectPrefix", () => {
 			extensionFilter: null,
 			search: "heading",
 			prefixApplied: true,
+		});
+	});
+
+	it("returns directory mode when query starts with '/ '", () => {
+		const result = detectPrefix("/ projects", defaultMode, null);
+		expect(result).toEqual({
+			mode: "directories",
+			extensionFilter: null,
+			search: "projects",
+			prefixApplied: true,
+		});
+	});
+
+	it("does not activate directory mode without trailing space", () => {
+		const result = detectPrefix("/projects", defaultMode, null);
+		expect(result).toEqual({
+			mode: "files",
+			extensionFilter: null,
+			search: "/projects",
+			prefixApplied: false,
 		});
 	});
 

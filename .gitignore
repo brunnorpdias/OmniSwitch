@@ -23,3 +23,6 @@ main.js
 # Env files
 .env
 .env.local
+
+# LLM files
+agents.md

@@ -1,6 +1,6 @@
 import type { App, WorkspaceLeaf } from "obsidian";
 
-export type OmniSwitchMode = "files" | "commands" | "attachments" | "headings";
+export type OmniSwitchMode = "files" | "commands" | "attachments" | "headings" | "directories";
 
 export interface PrefixDetectionResult {
 	mode: OmniSwitchMode;
@@ -35,6 +35,15 @@ export function detectPrefix(
 	if (raw.startsWith("> ")) {
 		return {
 			mode: "commands",
+			extensionFilter: null,
+			search: raw.slice(2),
+			prefixApplied: true,
+		};
+	}
+
+	if (raw.startsWith("/ ")) {
+		return {
+			mode: "directories",
 			extensionFilter: null,
 			search: raw.slice(2),
 			prefixApplied: true,

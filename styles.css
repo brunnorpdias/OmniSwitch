@@ -11,6 +11,12 @@ If your plugin does not need CSS, delete this file.
 	display: none;
 }
 
+.omniswitch-modal .modal-close-button,
+.omniswitch-modal .modal-close-x,
+.omniswitch-modal button[aria-label="Close"] {
+	display: none !important;
+}
+
 .omniswitch-input-container {
 	display: flex;
 	align-items: center;
@@ -19,6 +25,24 @@ If your plugin does not need CSS, delete this file.
 
 .omniswitch-input-container .omniswitch-input {
 	flex: 1;
+}
+
+.omniswitch-input-container .search-input-clear-button {
+	display: none !important;
+}
+
+.omniswitch-mode-pill {
+	font-size: 0.7rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	color: var(--text-normal);
+	background-color: var(--background-modifier-border);
+	padding: 0.25rem 0.65rem;
+	border-radius: 999px;
+	border-bottom: 1px solid var(--background-modifier-border-hover);
+	letter-spacing: 0.05em;
+	white-space: nowrap;
+	margin-right: 0.5rem;
 }
 
 .omniswitch-suggestion {
@@ -41,7 +65,7 @@ If your plugin does not need CSS, delete this file.
 }
 
 .omniswitch-suggestion__title {
-	font-weight: 500;
+	font-weight: 400;
 	color: var(--text-normal);
 	overflow: hidden;
 	text-overflow: ellipsis;

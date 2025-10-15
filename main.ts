@@ -1,9 +1,9 @@
 import { Notice, Plugin } from "obsidian";
 import { OmniSwitchSettings, migrateSettings } from "./src/settings";
-import { SearchIndex } from "./src/search-index";
+import { SearchIndex } from "./src/search";
 import { OmniSwitchModal, type OmniSwitchModalOptions } from "./src/omni-switch-modal";
-import { OmniSwitchSettingTab } from "./src/settings-tab";
-import { collectFileLeaves } from "./src/search-utils";
+import { OmniSwitchSettingTab } from "./src/settings/tab";
+import { collectFileLeaves } from "./src/search/utils";
 
 export default class OmniSwitchPlugin extends Plugin {
 	settings: OmniSwitchSettings;
