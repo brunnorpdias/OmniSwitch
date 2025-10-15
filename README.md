@@ -1,94 +1,91 @@
-# Obsidian Sample Plugin
+# OmniSwitch for Obsidian
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+OmniSwitch replaces the sample-plugin boilerplate with a fast vault-wide switcher that keeps your keyboard at the centre of everything. From a single command (`Cmd/Ctrl + K`) you can:
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+- Jump to notes, headings, attachments, and commands with fuzzy search.
+- Limit results on the fly with lightweight prefixes (`>`, `#`, `!`).
+- Open existing tabs instead of duplicating them, or spawn new panes with `Cmd/Ctrl + Enter`.
+- Log the currently open editor leaves to the console for debugging complex layouts.
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+The plugin automatically ignores Obsidian accessory panes (outline, backlinks, etc.) so focusing an already open note always returns to the correct editor.
 
-## First time developing plugins?
+## Search Modes & Prefixes
 
-Quick starting guide for new plugin devs:
+Open the switcher with **Cmd/Ctrl + K** *(command id: `omniswitch-open`)* and use the following prefixes. All prefixes require a trailing space before they activate.
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+| Prefix | Mode | Result |
+| --- | --- | --- |
+| *(none)* | Notes | Markdown notes and recents. |
+| `# ` | Headings | Headings from Markdown notes. |
+| `> ` | Commands | Vault commands (same list as Command Palette). |
+| `! ` | Attachments | All non-note attachments. |
+| `!image ` | Attachments | Image files (`avif`, `bmp`, `gif`, `jpeg`, `jpg`, `png`, `svg`, `webp`). |
+| `!audio ` | Attachments | Audio files (`flac`, `m4a`, `mp3`, `ogg`, `wav`, `webm`, `3gp`). |
+| `!video ` | Attachments | Video files (`mkv`, `mov`, `mp4`, `ogv`, `webm`). |
+| `!obsidian ` | Attachments | Obsidian native formats (`base`, `canvas`). |
+| `!<ext> ` | Attachments | A specific extension (e.g. `!pdf `, `!md `, `!c `). |
 
-## Releasing new releases
+### Navigation
+- **Enter** – Open the selected entry (reuses existing tabs when available).
+- **Cmd/Ctrl + Enter** – Open in a new pane.
+- **Ctrl + J / Ctrl + K** – Move selection down/up.
+- **Backspace** – Leave the current mode when the search box is empty.
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+## Registered Commands
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+| Command | Description |
+| --- | --- |
+| `Search vault and commands` | Opens OmniSwitch (Cmd/Ctrl + K). |
+| `Search vault notes` | Directly opens note mode. |
+| `Search vault headings` | Opens heading mode. |
+| `Search vault commands` | Opens command mode. |
+| `Search vault attachments` | Opens attachment mode. |
+| `Omni Switch: Log open tabs` | Logs all open editor leaves to the developer console with their view type and location. |
 
-## Adding your plugin to the community plugin list
+## Project Structure
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint ./src/`
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+```
+├─ docs/                 # Additional documentation (moved from root)
+├─ scripts/              # Repository scripts (version bump)
+├─ src/
+│  ├─ omni-switch-modal.ts   # Core modal & UI logic
+│  ├─ search-index.ts        # Vault indexing and cache refresh
+│  ├─ search-utils.ts        # Shared prefix/category helpers
+│  ├─ settings*.ts           # Settings types and tab
+│  └─ ...
+├─ tests/               # Vitest suites for helpers
+├─ main.ts              # Obsidian entrypoint
+├─ styles.css           # Modal visuals
+└─ manifest.json        # Obsidian metadata
 ```
 
-If you have multiple URLs, you can also do:
+## Development
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+### Requirements
+- Node.js 18+
+- npm (bundled with Node)
+
+### Setup
+```bash
+npm install
 ```
 
-## API Documentation
+### Available scripts
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Run esbuild in watch mode. |
+| `npm run build` | Type-check + production bundle (outputs `main.js`). |
+| `npm run test` | Execute unit tests with Vitest. |
+| `npm run version` | Bump plugin + manifest versions (uses `scripts/version-bump.mjs`). |
 
-See https://github.com/obsidianmd/obsidian-api
+Place the repository inside your vault under `.obsidian/plugins/omniswitch` for live testing. After `npm run build`, enable the plugin in **Settings → Community Plugins**.
+
+## Release Checklist
+1. Update `manifest.json` and `versions.json` with the new version.
+2. Run `npm run build` to generate `main.js`.
+3. Create a GitHub release containing `manifest.json`, `main.js`, and `styles.css`.
+4. (Optional) Submit updates to the community plugin registry.
+
+## License
+
+MIT © OmniSwitch contributors.
