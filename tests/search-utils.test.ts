@@ -49,8 +49,8 @@ describe("detectPrefix", () => {
 		});
 	});
 
-	it("extracts attachment extension when query starts with '!ext '", () => {
-		const result = detectPrefix("!pdf invoices", defaultMode, null);
+	it("extracts attachment extension when query starts with '.ext '", () => {
+		const result = detectPrefix(".pdf invoices", defaultMode, null);
 		expect(result).toEqual({
 			mode: "attachments",
 			extensionFilter: "pdf",
@@ -60,17 +60,17 @@ describe("detectPrefix", () => {
 	});
 
 	it("does not activate attachments without trailing space", () => {
-		const result = detectPrefix("!pdf", defaultMode, null);
+		const result = detectPrefix(".pdf", defaultMode, null);
 		expect(result).toEqual({
 			mode: "files",
 			extensionFilter: null,
-			search: "!pdf",
+			search: ".pdf",
 			prefixApplied: false,
 		});
 	});
 
 	it("activates attachments after space following extension", () => {
-		const result = detectPrefix("!pdf ", defaultMode, null);
+		const result = detectPrefix(".pdf ", defaultMode, null);
 		expect(result).toEqual({
 			mode: "attachments",
 			extensionFilter: "pdf",
@@ -80,7 +80,7 @@ describe("detectPrefix", () => {
 	});
 
 	it("activates attachment category after space", () => {
-		const result = detectPrefix("!image screenshots", defaultMode, null);
+		const result = detectPrefix(".image screenshots", defaultMode, null);
 		expect(result).toEqual({
 			mode: "attachments",
 			extensionFilter: "image",
@@ -89,12 +89,32 @@ describe("detectPrefix", () => {
 		});
 	});
 
-	it("ignores attachment prefixes when already in another mode", () => {
-		const result = detectPrefix("!pdf invoices", "commands", null);
+	it("strips command prefix when already in command mode", () => {
+		const result = detectPrefix("> reload", "commands", null);
 		expect(result).toEqual({
 			mode: "commands",
 			extensionFilter: null,
-			search: "!pdf invoices",
+			search: "reload",
+			prefixApplied: false,
+		});
+	});
+
+	it("strips heading prefix when already in heading mode", () => {
+		const result = detectPrefix("# introduction", "headings", null);
+		expect(result).toEqual({
+			mode: "headings",
+			extensionFilter: null,
+			search: "introduction",
+			prefixApplied: false,
+		});
+	});
+
+	it("strips attachment prefix when already in attachment mode", () => {
+		const result = detectPrefix(".pdf invoices", "attachments", "pdf");
+		expect(result).toEqual({
+			mode: "attachments",
+			extensionFilter: "pdf",
+			search: "invoices",
 			prefixApplied: false,
 		});
 	});
@@ -126,11 +146,11 @@ describe("matchesAttachmentExtension", () => {
 		expect(matchesAttachmentExtension("mp3", null)).toBe(true);
 	});
 
-	it("blocks note extensions when filter is null", () => {
-		expect(matchesAttachmentExtension("md", null)).toBe(false);
-		expect(matchesAttachmentExtension("canvas", null)).toBe(false);
-		expect(matchesAttachmentExtension("base", null)).toBe(false);
-	});
+  it("blocks note extensions when filter is null", () => {
+    expect(matchesAttachmentExtension("md", null)).toBe(false);
+    expect(matchesAttachmentExtension("canvas", null)).toBe(false);
+    expect(matchesAttachmentExtension("base", null)).toBe(false);
+  });
 
 	it("allows specific extension matches", () => {
 		expect(matchesAttachmentExtension("md", "md")).toBe(true);
@@ -140,12 +160,12 @@ describe("matchesAttachmentExtension", () => {
 });
 
 describe("isNoteExtension", () => {
-	it("returns true for note-like extensions", () => {
-		expect(isNoteExtension("md")).toBe(true);
-		expect(isNoteExtension("MD")).toBe(true);
-		expect(isNoteExtension("canvas")).toBe(true);
-		expect(isNoteExtension("base")).toBe(true);
-	});
+  it("returns true for note-like extensions", () => {
+    expect(isNoteExtension("md")).toBe(true);
+    expect(isNoteExtension("MD")).toBe(true);
+    expect(isNoteExtension("canvas")).toBe(true);
+    expect(isNoteExtension("base")).toBe(true);
+  });
 
 	it("returns false for other extensions", () => {
 		expect(isNoteExtension("pdf")).toBe(false);

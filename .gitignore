@@ -12,6 +12,8 @@ coverage/
 # Logs & runtime artifacts
 *.log
 *.tmp
+indexes/
+data.json
 
 # Build artifacts
 main.js

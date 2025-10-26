@@ -9,10 +9,11 @@ export interface PrefixDetectionResult {
 	prefixApplied: boolean;
 }
 
+// Treat markdown, canvas and base as notes.
 const NOTE_EXTENSIONS = new Set(["md", "canvas", "base"]);
 
 const ATTACHMENT_CATEGORIES: Record<string, string[]> = {
-	obsidian: ["base", "canvas"],
+    obsidian: ["canvas"],
 	image: ["avif", "bmp", "gif", "jpeg", "jpg", "png", "svg", "webp"],
 	audio: ["flac", "m4a", "mp3", "ogg", "wav", "webm", "3gp"],
 	video: ["mkv", "mov", "mp4", "ogv", "webm"],
@@ -24,10 +25,31 @@ export function detectPrefix(
 	currentExtension: string | null,
 ): PrefixDetectionResult {
 	if (currentMode !== "files") {
+		// Still strip the mode prefix even when already in that mode
+		// (e.g., user types "> reload" while already in commands mode)
+		let search = raw;
+		if (currentMode === "commands" && raw.startsWith("> ")) {
+			search = raw.slice(2);
+		} else if (currentMode === "headings" && raw.startsWith("# ")) {
+			search = raw.slice(2);
+		} else if (currentMode === "directories" && raw.startsWith("/ ")) {
+			search = raw.slice(2);
+		} else if (currentMode === "attachments" && raw.startsWith(".")) {
+			// Handle attachment prefix (either `. ` or `.ext `)
+			const rest = raw.slice(1);
+			if (rest.startsWith(" ")) {
+				search = rest.slice(1);
+			} else {
+				const firstSpace = rest.indexOf(" ");
+				if (firstSpace !== -1) {
+					search = rest.slice(firstSpace + 1).trimStart();
+				}
+			}
+		}
 		return {
 			mode: currentMode,
 			extensionFilter: currentExtension,
-			search: raw,
+			search,
 			prefixApplied: false,
 		};
 	}
@@ -59,7 +81,7 @@ export function detectPrefix(
 		};
 	}
 
-	if (raw.startsWith("!")) {
+	if (raw.startsWith(".")) {
 		const rest = raw.slice(1);
 		if (rest.startsWith(" ")) {
 			return {

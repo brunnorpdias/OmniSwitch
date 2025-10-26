@@ -33,7 +33,7 @@ describe("migrateSettings", () => {
 			excludedPaths: [],
 			fileTypes: { includeHeadings: true },
 		};
-		const result = migrateSettings(legacy);
-		expect(result).toEqual({ excludedPaths: [] });
+  const result = migrateSettings(legacy);
+  expect(result).toEqual({ excludedPaths: [], searchEngine: DEFAULT_SETTINGS.searchEngine, prebuildBothEngines: DEFAULT_SETTINGS.prebuildBothEngines, verboseLogging: DEFAULT_SETTINGS.verboseLogging, maxResults: DEFAULT_SETTINGS.maxResults, forceRebuild: DEFAULT_SETTINGS.forceRebuild });
 	});
 });

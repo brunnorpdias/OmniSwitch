@@ -22,3 +22,11 @@ export interface FolderSearchItem {
 	type: "folder";
 	folder: TFolder;
 }
+
+export type SearchEngineId = "fuse" | "mini" | "hybrid";
+
+export interface SearchHit {
+	item: SearchItem;
+	score: number;
+	engine: SearchEngineId;
+}

@@ -12,7 +12,8 @@ import {
 	type Instruction,
 	type SearchResult,
 } from "obsidian";
-import type { SearchItem, HeadingSearchItem, FileSearchItem, FolderSearchItem } from "./search/types";
+import { SearchCoordinator } from "./search";
+import type { SearchHit, SearchItem, HeadingSearchItem, FileSearchItem, FolderSearchItem } from "./search";
 import { getCommandManager } from "./obsidian-helpers";
 import {
 	collectFileLeaves,
@@ -32,8 +33,6 @@ export interface OmniSwitchModalOptions {
 	initialDirectoryTrail?: string[];
 }
 
-type ItemSupplier = () => SearchItem[];
-
 export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	private mode: OmniSwitchMode;
 	private extensionFilter: string | null;
@@ -43,12 +42,27 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	private directoryStack: TFolder[] = [];
 	private modeLabelEl: HTMLSpanElement | null = null;
 	private clearButtonObserver: MutationObserver | null = null;
+    private refreshTimer: number | null = null;
+    private statusTimer: number | null = null;
+    private statusEl: HTMLDivElement | null = null;
+    private static readonly DEBOUNCE_MS_FILES = 0;
+    private static readonly DEBOUNCE_MS_HEADINGS = 0;
+
+    // Track keystroke timing for performance logging
+    private lastKeystrokeTime: number | null = null;
+
+    // Track last searched query to avoid duplicate searches
+    private lastSearchedQuery = "";
+    private isSearching = false;
 
 	private readonly handleInput = (_event: Event): void => {
 		if (this.isProgrammaticInput) {
 			this.isProgrammaticInput = false;
 			return;
 		}
+
+		// Capture keystroke time for performance logging
+		this.lastKeystrokeTime = performance.now();
 
 		const rawValue = this.inputEl.value;
 		const detection = this.detectPrefix(rawValue);
@@ -59,17 +73,19 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			}
 			this.mode = detection.mode;
 			this.extensionFilter = detection.extensionFilter;
+			console.log(`[Modal] Prefix detected: mode=${this.mode}, extensionFilter=${this.extensionFilter}, search="${detection.search}"`);
 			this.updateModeUI();
 			this.updateModeLabel();
 			this.inputEl.value = detection.search;
 			this.inputEl.setSelectionRange(detection.search.length, detection.search.length);
-			this.refreshSuggestions();
+			this.scheduleRefreshSuggestions();
 			return;
 		}
 
 		// When the user types normally, ensure the current mode styling stays in sync.
 		this.updateModeUI();
 		this.updateModeLabel();
+		this.scheduleRefreshSuggestions();
 	};
 
 	private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -133,7 +149,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		}
 	};
 
-	constructor(app: App, private readonly supplyItems: ItemSupplier, options: OmniSwitchModalOptions = {}) {
+	constructor(app: App, private readonly search: SearchCoordinator, options: OmniSwitchModalOptions = {}) {
 		super(app);
 		this.mode = options.initialMode ?? "files";
 		this.extensionFilter = options.extensionFilter ?? null;
@@ -149,12 +165,26 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		this.removeCloseButton();
 		this.setupInputChrome();
 
+		// Status ribbon
+		this.statusEl = this.contentEl.createDiv({ cls: "omniswitch-status" });
+		this.statusEl.style.cssText = "font-size:12px;opacity:0.8;margin:4px 8px 0;";
+		const updateStatus = () => {
+			const msg = this.search.getStatusMessage();
+			if (!msg || /ready/i.test(msg)) {
+				this.statusEl!.setText("");
+				return;
+			}
+			this.statusEl!.setText(msg);
+		};
+		updateStatus();
+		this.statusTimer = window.setInterval(updateStatus, 250);
+
 		this.inputEl.value = this.initialQuery;
 		this.inputEl.addEventListener("input", this.handleInput, true);
 		this.inputEl.addEventListener("keydown", this.handleKeyDown, true);
 
 		this.updateModeUI();
-		window.setTimeout(() => this.refreshSuggestions(), 0);
+		window.setTimeout(() => this.scheduleRefreshSuggestions(), 0);
 	}
 
 	onClose(): void {
@@ -162,59 +192,57 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		this.inputEl.removeEventListener("keydown", this.handleKeyDown, true);
 		this.clearButtonObserver?.disconnect();
 		this.clearButtonObserver = null;
+        if (this.statusTimer) { window.clearInterval(this.statusTimer); this.statusTimer = null; }
 		super.onClose();
 	}
 
 	getItems(): SearchItem[] {
-		return this.supplyItems();
+		return this.search.getItems();
 	}
 
 	getSuggestions(query: string): FuzzyMatch<SearchItem>[] {
+		const t0 = performance.now();
+
 		if (this.mode === "directories") {
-			return this.getDirectorySuggestions(query);
-		}
-		const items = this.filterItems(this.getItems(), this.mode, this.extensionFilter);
-		const trimmedLeading = query.trimStart();
-		if (this.mode === "files") {
-			if (trimmedLeading.startsWith("!") && !trimmedLeading.startsWith("! ") && !/^![^ ]+ /.test(trimmedLeading)) {
-				return [];
-			}
-			if (trimmedLeading.startsWith(">") && !trimmedLeading.startsWith("> ")) {
-				return [];
-			}
-			if (trimmedLeading.startsWith("#") && !trimmedLeading.startsWith("# ")) {
-				return [];
-			}
-			if (trimmedLeading.startsWith("/") && !trimmedLeading.startsWith("/ ")) {
-				return [];
-			}
+			const matches = this.getDirectorySuggestions(query);
+			const limit = this.search.getMaxResults ? this.search.getMaxResults() : 20;
+			return matches.slice(0, limit);
 		}
 
 		const normalizedQuery = query.trim();
-		const effectiveQuery = normalizedQuery.length > 0 ? normalizedQuery : query;
+		const maxResults = this.search.getMaxResults ? this.search.getMaxResults() : 20;
 
-		if (this.mode === "files" && effectiveQuery.length === 0) {
-			const recent = this.collectRecentFileSuggestions();
-			if (recent.length > 0) {
-				return recent;
+		// Handle empty query - show suggestions based on mode
+		if (normalizedQuery.length === 0) {
+			const suggestions = this.getEmptyQuerySuggestions(maxResults);
+			const totalMs = performance.now() - t0;
+			console.log(`[Modal] ${this.mode} mode: empty query suggestions in ${totalMs.toFixed(1)}ms (results=${suggestions.length})`);
+			return suggestions;
+		}
+
+		console.log(`[Modal] ${this.mode} mode: Starting search for "${normalizedQuery}"`);
+		const tSearch0 = performance.now();
+		const hits = this.search.search(this.mode, normalizedQuery, this.extensionFilter);
+		const searchMs = performance.now() - tSearch0;
+		// Safety filter by mode at UI layer as well, to avoid any engine-specific leakage
+		const filtered = hits.filter((hit) => {
+			if (hit.item.type !== "file") return true; // headings/commands filtered elsewhere
+			const ext = hit.item.file.extension;
+			if (this.mode === "files") {
+				return isNoteExtension(ext);
 			}
-		}
-
-		if (effectiveQuery.length === 0) {
-			return items.map((item) => ({ item, match: this.emptyMatch() }));
-		}
-
-		const fuzzy = prepareFuzzySearch(effectiveQuery);
-		const matches: FuzzyMatch<SearchItem>[] = [];
-		for (const item of items) {
-			const text = this.getItemText(item);
-			const match = fuzzy(text);
-			if (match) {
-				matches.push({ item, match });
+			if (this.mode === "attachments") {
+				return matchesAttachmentExtension(ext, this.extensionFilter);
 			}
+			return true;
+		});
+		if (hits.length === 0) {
+			return [];
 		}
-		matches.sort((a, b) => {
-			const scoreDiff = b.match.score - a.match.score;
+
+		const tSort0 = performance.now();
+		const sorted = filtered.sort((a, b) => {
+			const scoreDiff = b.score - a.score;
 			if (scoreDiff !== 0) {
 				return scoreDiff;
 			}
@@ -222,8 +250,74 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			const textB = this.getItemText(b.item);
 			return textA.localeCompare(textB);
 		});
-		return matches;
+		const sortMs = performance.now() - tSort0;
+
+		const results = sorted.slice(0, maxResults).map((hit) => this.toFuzzyMatch(hit));
+
+		// Calculate total time
+		const totalMs = performance.now() - t0;
+		const keystrokeToDisplayMs = this.lastKeystrokeTime !== null ? (performance.now() - this.lastKeystrokeTime) : null;
+
+		// Log breakdown
+		console.log(`[Modal] ${this.mode} mode: search=${searchMs.toFixed(1)}ms, filter+sort=${sortMs.toFixed(1)}ms, total=${totalMs.toFixed(1)}ms, results=${results.length}`);
+		if (keystrokeToDisplayMs !== null) {
+			console.log(`[Modal] ⏱️  KEYSTROKE→DISPLAY: ${keystrokeToDisplayMs.toFixed(1)}ms (includes ${OmniSwitchModal.DEBOUNCE_MS_HEADINGS}ms debounce for headings)`);
+		}
+
+		return results;
 	}
+
+    private scheduleRefreshSuggestions(): void {
+        const delay = this.mode === "headings" ? OmniSwitchModal.DEBOUNCE_MS_HEADINGS : OmniSwitchModal.DEBOUNCE_MS_FILES;
+
+        // Get current query to check if we should even schedule
+        const currentQuery = this.inputEl.value;
+
+        // Skip if query hasn't changed from last search
+        if (currentQuery === this.lastSearchedQuery) {
+            return;
+        }
+
+        // Skip if already searching the same query
+        if (this.isSearching) {
+            return;
+        }
+
+        // Clear existing timer
+        if (this.refreshTimer !== null) {
+            window.clearTimeout(this.refreshTimer);
+            this.refreshTimer = null;
+        }
+
+        // Schedule new search after debounce period
+        this.refreshTimer = window.setTimeout(() => {
+            this.refreshTimer = null;
+
+            // Double-check query hasn't changed and we're not already searching
+            const finalQuery = this.inputEl.value;
+            if (finalQuery === this.lastSearchedQuery || this.isSearching) {
+                return;
+            }
+
+            // Update last searched query and mark as searching
+            this.lastSearchedQuery = finalQuery;
+            this.isSearching = true;
+            console.log(`[Modal] ${this.mode} mode: Starting search for "${finalQuery}"`);
+
+            // Defer search execution to next frame to unblock UI thread
+            // This allows the browser to paint typed characters before we block with search
+            requestAnimationFrame(() => {
+                try {
+                    this.refreshSuggestions();
+                } catch (error) {
+                    console.error("[Modal] Search error:", error);
+                } finally {
+                    // Mark search as complete
+                    this.isSearching = false;
+                }
+            });
+        }, delay);
+    }
 
 	private getDirectorySuggestions(query: string): FuzzyMatch<SearchItem>[] {
 		const candidates = this.getDirectoryCandidates();
@@ -525,6 +619,8 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		if (previous === "directories" || next === "directories") {
 			this.directoryStack = [];
 		}
+		// Reset search state when mode changes
+		this.lastSearchedQuery = "";
 		this.updateModeLabel();
 	}
 
@@ -586,6 +682,14 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		this.inputEl.dispatchEvent(new Event("input"));
 	}
 
+	private toFuzzyMatch(hit: SearchHit): FuzzyMatch<SearchItem> {
+		const match: SearchResult = {
+			score: hit.score,
+			matches: [],
+		};
+		return { item: hit.item, match };
+	}
+
 	private emptyMatch(): SearchResult {
 		return { score: 0, matches: [] };
 	}
@@ -643,7 +747,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			{ command: "enter", purpose: "open" },
 			{ command: this.newTabShortcutLabel(), purpose: "new tab" },
 			{ command: "> ", purpose: "commands" },
-			{ command: "!(ext/category)", purpose: "attachments" },
+			{ command: ".(ext/category)", purpose: "attachments" },
 			{ command: "/ ", purpose: "folders" },
 			{ command: "# ", purpose: "headings" },
 		];
@@ -710,31 +814,28 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return this.getDirectoryCandidates().some((item) => item.type === "file");
 	}
 
-	private filterItems(items: SearchItem[], mode: OmniSwitchMode, extensionFilter: string | null): SearchItem[] {
-		switch (mode) {
-			case "commands":
-				return items.filter((item) => item.type === "command");
-			case "attachments":
-				return items.filter(
-					(item) =>
-						item.type === "file"
-						&& this.matchesAttachmentFilter(item.file, extensionFilter),
-				);
-			case "headings":
-				return items.filter((item) => item.type === "heading");
-			case "files":
-			default:
-				return items.filter((item) => {
-					if (item.type !== "file") {
-						return false;
-					}
-					return isNoteExtension(item.file.extension);
-				});
-		}
-	}
 
-	private matchesAttachmentFilter(file: TFile, extensionFilter: string | null): boolean {
-		return matchesAttachmentExtension(file.extension, extensionFilter);
+	private getEmptyQuerySuggestions(limit: number): FuzzyMatch<SearchItem>[] {
+		switch (this.mode) {
+			case "files": {
+				// Show recent files (up to 10)
+				const recent = this.collectRecentFileSuggestions();
+				if (recent.length > 0) {
+					return recent;
+				}
+				// Fallback: show nothing for files to avoid expensive getItems()
+				return [];
+			}
+			case "commands":
+			case "headings":
+			case "attachments": {
+				// Get suggestions from coordinator (efficient, uses cached data)
+				const hits = this.search.getSuggestions(this.mode, limit, this.extensionFilter);
+				return hits.map((hit) => this.toFuzzyMatch(hit));
+			}
+			default:
+				return [];
+		}
 	}
 
 	private collectRecentFileSuggestions(): FuzzyMatch<SearchItem>[] {
