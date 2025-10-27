@@ -19,15 +19,7 @@ describe("detectPrefix", () => {
 		});
 	});
 
-	it("returns heading mode when query starts with '# '", () => {
-		const result = detectPrefix("# heading", defaultMode, null);
-		expect(result).toEqual({
-			mode: "headings",
-			extensionFilter: null,
-			search: "heading",
-			prefixApplied: true,
-		});
-	});
+    // headings prefix removed
 
 	it("returns directory mode when query starts with '/ '", () => {
 		const result = detectPrefix("/ projects", defaultMode, null);
@@ -49,55 +41,55 @@ describe("detectPrefix", () => {
 		});
 	});
 
-	it("extracts attachment extension when query starts with '!ext '", () => {
-		const result = detectPrefix("!pdf invoices", defaultMode, null);
-		expect(result).toEqual({
-			mode: "attachments",
-			extensionFilter: "pdf",
-			search: "invoices",
-			prefixApplied: true,
-		});
-	});
+    it("extracts attachment extension when query starts with '.ext '", () => {
+        const result = detectPrefix(".pdf invoices", defaultMode, null);
+        expect(result).toEqual({
+            mode: "attachments",
+            extensionFilter: "pdf",
+            search: "invoices",
+            prefixApplied: true,
+        });
+    });
 
-	it("does not activate attachments without trailing space", () => {
-		const result = detectPrefix("!pdf", defaultMode, null);
-		expect(result).toEqual({
-			mode: "files",
-			extensionFilter: null,
-			search: "!pdf",
-			prefixApplied: false,
-		});
-	});
+    it("does not activate attachments without trailing space", () => {
+        const result = detectPrefix(".pdf", defaultMode, null);
+        expect(result).toEqual({
+            mode: "files",
+            extensionFilter: null,
+            search: ".pdf",
+            prefixApplied: false,
+        });
+    });
 
-	it("activates attachments after space following extension", () => {
-		const result = detectPrefix("!pdf ", defaultMode, null);
-		expect(result).toEqual({
-			mode: "attachments",
-			extensionFilter: "pdf",
-			search: "",
-			prefixApplied: true,
-		});
-	});
+    it("activates attachments after space following extension", () => {
+        const result = detectPrefix(".pdf ", defaultMode, null);
+        expect(result).toEqual({
+            mode: "attachments",
+            extensionFilter: "pdf",
+            search: "",
+            prefixApplied: true,
+        });
+    });
 
-	it("activates attachment category after space", () => {
-		const result = detectPrefix("!image screenshots", defaultMode, null);
-		expect(result).toEqual({
-			mode: "attachments",
-			extensionFilter: "image",
-			search: "screenshots",
-			prefixApplied: true,
-		});
-	});
+    it("activates attachment category after space", () => {
+        const result = detectPrefix(".image screenshots", defaultMode, null);
+        expect(result).toEqual({
+            mode: "attachments",
+            extensionFilter: "image",
+            search: "screenshots",
+            prefixApplied: true,
+        });
+    });
 
-	it("ignores attachment prefixes when already in another mode", () => {
-		const result = detectPrefix("!pdf invoices", "commands", null);
-		expect(result).toEqual({
-			mode: "commands",
-			extensionFilter: null,
-			search: "!pdf invoices",
-			prefixApplied: false,
-		});
-	});
+    it("ignores attachment prefixes when already in another mode", () => {
+        const result = detectPrefix(".pdf invoices", "commands", null);
+        expect(result).toEqual({
+            mode: "commands",
+            extensionFilter: null,
+            search: ".pdf invoices",
+            prefixApplied: false,
+        });
+    });
 
 	it("returns current mode when no prefix present", () => {
 		const result = detectPrefix("weekly", defaultMode, null);
@@ -121,16 +113,20 @@ describe("detectPrefix", () => {
 });
 
 describe("matchesAttachmentExtension", () => {
-	it("allows all non-note extensions when filter is null", () => {
-		expect(matchesAttachmentExtension("png", null)).toBe(true);
-		expect(matchesAttachmentExtension("mp3", null)).toBe(true);
-	});
+  it("allows all non-note extensions when filter is null", () => {
+    expect(matchesAttachmentExtension("png", null)).toBe(true);
+    expect(matchesAttachmentExtension("mp3", null)).toBe(true);
+  });
 
-	it("blocks note extensions when filter is null", () => {
-		expect(matchesAttachmentExtension("md", null)).toBe(false);
-		expect(matchesAttachmentExtension("canvas", null)).toBe(false);
-		expect(matchesAttachmentExtension("base", null)).toBe(false);
-	});
+  it("blocks note extensions when filter is null", () => {
+    expect(matchesAttachmentExtension("md", null)).toBe(false);
+    expect(matchesAttachmentExtension("canvas", null)).toBe(false);
+    expect(matchesAttachmentExtension("base", null)).toBe(false);
+  });
+
+  it("blocks extensionless files when filter is null", () => {
+    expect(matchesAttachmentExtension("", null)).toBe(false);
+  });
 
 	it("allows specific extension matches", () => {
 		expect(matchesAttachmentExtension("md", "md")).toBe(true);

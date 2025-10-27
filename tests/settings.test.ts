@@ -33,7 +33,7 @@ describe("migrateSettings", () => {
 			excludedPaths: [],
 			fileTypes: { includeHeadings: true },
 		};
-		const result = migrateSettings(legacy);
-		expect(result).toEqual({ excludedPaths: [] });
+  const result = migrateSettings(legacy);
+  expect(result.excludedPaths).toEqual([]);
 	});
 });

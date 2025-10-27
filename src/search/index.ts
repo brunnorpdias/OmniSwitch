@@ -1,34 +1,13 @@
 import { App, TFile, TFolder } from "obsidian";
 import type { OmniSwitchSettings } from "../settings";
-import { SearchItem, CommandSearchItem, FileSearchItem, HeadingSearchItem, FolderSearchItem } from "./types";
+import { SearchItem, CommandSearchItem, FileSearchItem, FolderSearchItem } from "./types";
 import { getCommandManager } from "../obsidian-helpers";
-
-interface ExclusionMatcher {
-	exact: string;
-	prefix: string;
-}
-
-function buildExclusionMatchers(paths: string[]): ExclusionMatcher[] {
-	return paths.map((raw) => {
-		const normalized = normalizePath(raw);
-		const prefix = normalized.endsWith("/") ? normalized : `${normalized}/`;
-		return { exact: normalized, prefix };
-	});
-}
-
-function normalizePath(path: string): string {
-	return path.replace(/\\/g, "/").replace(/^\/+/, "");
-}
-
-function isExcluded(path: string, matchers: ExclusionMatcher[]): boolean {
-	const normalized = normalizePath(path);
-	return matchers.some((matcher) => normalized === matcher.exact || normalized.startsWith(matcher.prefix));
-}
+import { buildExclusionMatchers, isExcluded } from "./utils";
 
 export class SearchIndex {
-	private items: SearchItem[] = [];
-	private dirty = true;
-	private matchers: ExclusionMatcher[] = [];
+    private items: SearchItem[] = [];
+    private dirty = true;
+    private matchers = [] as ReturnType<typeof buildExclusionMatchers>;
 
 	constructor(private readonly app: App) {}
 
@@ -36,79 +15,69 @@ export class SearchIndex {
 		this.dirty = true;
 	}
 
-	async refresh(settings: OmniSwitchSettings): Promise<void> {
-		if (!this.dirty) {
-			return;
-		}
+    async refresh(settings: OmniSwitchSettings): Promise<void> {
+        if (!this.dirty) {
+            return;
+        }
+        const debug = (settings as { debug?: boolean }).debug === true;
+        const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
 
-		this.matchers = buildExclusionMatchers(settings.excludedPaths);
+        this.matchers = buildExclusionMatchers(settings.excludedPaths);
 
-		const items: SearchItem[] = [];
+        const items: SearchItem[] = [];
 
-		const commandManager = getCommandManager(this.app);
-		const commands = commandManager?.listCommands() ?? [];
-		for (const command of commands) {
-			const commandItem: CommandSearchItem = {
-				type: "command",
-				command,
-			};
-			items.push(commandItem);
-		}
+        // Commands
+        const tCmd = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const commandManager = getCommandManager(this.app);
+        const commands = commandManager?.listCommands() ?? [];
+        for (const command of commands) {
+            const commandItem: CommandSearchItem = { type: "command", command };
+            items.push(commandItem);
+        }
+        if (debug) console.log("OmniSwitch: collected commands:", commands.length, "in", Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - tCmd)), "ms");
 
-		const folders: TFolder[] = [];
-		const appendFolders = (folder: TFolder): void => {
-			if (!isExcluded(folder.path, this.matchers)) {
-				folders.push(folder);
-			}
-			for (const child of folder.children) {
-				if (child instanceof TFolder) {
-					appendFolders(child);
-				}
-			}
-		};
-		appendFolders(this.app.vault.getRoot());
+        // Files (single API call)
+        if (debug) console.log("OmniSwitch: walking the vault (getAllLoadedFiles)…");
+        const tFiles = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const all = this.app.vault.getAllLoadedFiles();
+        const files: TFile[] = [];
+        for (const af of all) {
+            if (af instanceof TFile) files.push(af);
+        }
+        if (debug) console.log("OmniSwitch: building index from files…", files.length, "files");
 
-		for (const folder of folders) {
-			const folderItem: FolderSearchItem = {
-				type: "folder",
-				folder,
-			};
-			items.push(folderItem);
-		}
+        for (const file of files) {
+            const fileItem: FileSearchItem = { type: "file", file };
+            items.push(fileItem);
+        }
+        if (debug) console.log("OmniSwitch: files indexed in", Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - tFiles)), "ms");
 
-		const allFiles = this.app.vault.getAllLoadedFiles();
-		for (const abstractFile of allFiles) {
-			if (!(abstractFile instanceof TFile)) {
-				continue;
-			}
-			if (isExcluded(abstractFile.path, this.matchers)) {
-				continue;
-			}
-			const fileItem: FileSearchItem = {
-				type: "file",
-				file: abstractFile,
-			};
-			items.push(fileItem);
+        // Folders via Obsidian's folder tree (easiest way)
+        const tFolders = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const folders: TFolder[] = [];
+        const appendFolders = (folder: TFolder): void => {
+            folders.push(folder);
+            for (const child of folder.children) {
+                if (child instanceof TFolder) appendFolders(child);
+            }
+        };
+        appendFolders(this.app.vault.getRoot());
+        for (const folder of folders) {
+            const folderItem: FolderSearchItem = { type: "folder", folder };
+            items.push(folderItem);
+        }
+        if (debug) console.log("OmniSwitch: folders collected:", folders.length, "in", Math.round(((typeof performance !== "undefined" ? performance.now() : Date.now()) - tFolders)), "ms");
 
-			if (abstractFile.extension.toLowerCase() === "md") {
-				const cache = this.app.metadataCache.getFileCache(abstractFile);
-				const headings = cache?.headings ?? [];
-				for (const heading of headings) {
-					const headingItem: HeadingSearchItem = {
-						type: "heading",
-						file: abstractFile,
-						heading,
-					};
-					items.push(headingItem);
-				}
-			}
-		}
+        this.items = items;
+        this.dirty = false;
 
-		this.items = items;
-		this.dirty = false;
-	}
+        if (debug) {
+            const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
+            console.log("OmniSwitch: indexing complete in", Math.round(t1 - t0), "ms. Ready for engine.");
+        }
+    }
 
-	getItems(): SearchItem[] {
-		return this.items;
-	}
+    getItems(): SearchItem[] {
+        return this.items;
+    }
 }

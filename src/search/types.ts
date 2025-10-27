@@ -1,6 +1,6 @@
-import type { Command, HeadingCache, TFile, TFolder } from "obsidian";
+import type { Command, TFile, TFolder } from "obsidian";
 
-export type SearchItem = FileSearchItem | CommandSearchItem | HeadingSearchItem | FolderSearchItem;
+export type SearchItem = FileSearchItem | CommandSearchItem | FolderSearchItem;
 
 export interface FileSearchItem {
 	type: "file";
@@ -10,12 +10,6 @@ export interface FileSearchItem {
 export interface CommandSearchItem {
 	type: "command";
 	command: Command;
-}
-
-export interface HeadingSearchItem {
-	type: "heading";
-	file: TFile;
-	heading: HeadingCache;
 }
 
 export interface FolderSearchItem {

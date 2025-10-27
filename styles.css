@@ -99,3 +99,8 @@ If your plugin does not need CSS, delete this file.
 .omniswitch-settings__textarea {
 	min-height: 6rem;
 }
+
+/* Debug label styling */
+.omniswitch-debug-label {
+  color: #d0021b;
+}

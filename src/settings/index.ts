@@ -1,9 +1,23 @@
 export interface OmniSwitchSettings {
-	excludedPaths: string[];
+    excludedPaths: string[];
+    /** Map of path → open count for frequency-based ranking */
+    openCounts?: Record<string, number>;
+    /** When true, logs live progress and timings to console */
+    debug?: boolean;
+    /** Max suggestions to show (also used for re-rank K) */
+    maxSuggestions?: number;
+    /** Percent weight for frequency in tie-break (0..100). Remainder goes to modified-time */
+    tieBreakFreqPercent?: number;
+    /** Percent of top scoring results to return (10..50) */
+    engineTopPercent?: number;
 }
 
 export const DEFAULT_SETTINGS: OmniSwitchSettings = {
-	excludedPaths: [],
+    excludedPaths: [],
+    debug: false,
+    maxSuggestions: 20,
+    tieBreakFreqPercent: 70,
+    engineTopPercent: 20,
 };
 
 export function parseExcludedPaths(input: string): string[] {
@@ -18,19 +32,54 @@ export function formatExcludedPaths(paths: string[]): string {
 }
 
 export function migrateSettings(data: unknown): OmniSwitchSettings {
-	const settings: OmniSwitchSettings = {
-		excludedPaths: [...DEFAULT_SETTINGS.excludedPaths],
-	};
-
-	if (!data || typeof data !== "object") {
-		return settings;
-	}
+    if (!data || typeof data !== "object") {
+        return { ...DEFAULT_SETTINGS };
+    }
+    const settings: OmniSwitchSettings = {
+        excludedPaths: [...DEFAULT_SETTINGS.excludedPaths],
+        debug: DEFAULT_SETTINGS.debug,
+        maxSuggestions: DEFAULT_SETTINGS.maxSuggestions,
+        tieBreakFreqPercent: DEFAULT_SETTINGS.tieBreakFreqPercent,
+        engineTopPercent: DEFAULT_SETTINGS.engineTopPercent,
+    } as OmniSwitchSettings;
 
 	const record = data as Record<string, unknown>;
 
-	if (Array.isArray(record.excludedPaths)) {
-		settings.excludedPaths = record.excludedPaths.filter((entry): entry is string => typeof entry === "string");
-	}
+    if (Array.isArray(record.excludedPaths)) {
+        settings.excludedPaths = record.excludedPaths.filter((entry): entry is string => typeof entry === "string");
+    }
 
-	return settings;
+    if (record.openCounts && typeof record.openCounts === "object") {
+        const oc = record.openCounts as Record<string, unknown>;
+        settings.openCounts = Object.fromEntries(
+            Object.entries(oc)
+                .filter(([k, v]) => typeof k === "string" && typeof v === "number")
+                .map(([k, v]) => [k, v as number])
+        );
+    }
+
+    if (typeof record.debug === "boolean") {
+        settings.debug = record.debug;
+    }
+
+    if (typeof record.maxSuggestions === "number") {
+        const v = Math.max(5, Math.min(50, Math.round((record.maxSuggestions as number) / 5) * 5));
+        settings.maxSuggestions = v;
+    }
+
+    if (typeof record.tieBreakFreqPercent === "number") {
+        const raw = record.tieBreakFreqPercent as number;
+        // Clamp to 0..100 in steps of 10
+        const v = Math.max(0, Math.min(100, Math.round(raw / 10) * 10));
+        settings.tieBreakFreqPercent = v;
+    }
+
+    if (typeof record.engineTopPercent === "number") {
+        const raw = record.engineTopPercent as number;
+        // Clamp 10..50 in steps of 5
+        const v = Math.max(10, Math.min(50, Math.round(raw / 5) * 5));
+        settings.engineTopPercent = v;
+    }
+
+    return settings;
 }

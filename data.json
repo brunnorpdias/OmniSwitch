@@ -1,0 +1,26 @@
+{
+  "excludedPaths": [],
+  "debug": false,
+  "maxSuggestions": 20,
+  "tieBreakFreqPercent": 70,
+  "engineTopPercent": 20,
+  "openCounts": {
+    "notes/note_09283.md": 10,
+    "Untitled 4.md": 1,
+    "notes/note_00010.md": 5,
+    "notes/note_00090.md": 14,
+    "Untitled 2.md": 3,
+    "Untitled 5.md": 3,
+    "notes/note_09999.md": 5,
+    "notes/note_03000.md": 4,
+    "Untitled 6.md": 1,
+    "notes/note_02849.md": 1,
+    "notes/note_08280.md": 3,
+    "notes/note_02999.md": 9,
+    "notes/note_02990.md": 3,
+    "9999.md": 6,
+    "test.md": 1,
+    "999.md": 10,
+    "notes/note_09995.md": 1
+  }
+}

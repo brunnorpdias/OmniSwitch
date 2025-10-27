@@ -1,6 +1,6 @@
 import type { App, WorkspaceLeaf } from "obsidian";
 
-export type OmniSwitchMode = "files" | "commands" | "attachments" | "headings" | "directories";
+export type OmniSwitchMode = "files" | "commands" | "attachments" | "directories";
 
 export interface PrefixDetectionResult {
 	mode: OmniSwitchMode;
@@ -19,9 +19,9 @@ const ATTACHMENT_CATEGORIES: Record<string, string[]> = {
 };
 
 export function detectPrefix(
-	raw: string,
-	currentMode: OmniSwitchMode,
-	currentExtension: string | null,
+    raw: string,
+    currentMode: OmniSwitchMode,
+    currentExtension: string | null,
 ): PrefixDetectionResult {
 	if (currentMode !== "files") {
 		return {
@@ -50,45 +50,40 @@ export function detectPrefix(
 		};
 	}
 
-	if (raw.startsWith("# ")) {
-		return {
-			mode: "headings",
-			extensionFilter: null,
-			search: raw.slice(2),
-			prefixApplied: true,
-		};
-	}
+    // '#' (headings) prefix removed
 
-	if (raw.startsWith("!")) {
-		const rest = raw.slice(1);
-		if (rest.startsWith(" ")) {
-			return {
-				mode: "attachments",
-				extensionFilter: null,
-				search: rest.slice(1),
-				prefixApplied: true,
-			};
-		}
+    // Attachment search: switch from legacy bang (!) to dot (.) prefix.
+    // Examples: ". " → attachments (no filter); ".pdf <query>" → attachments filtered by extension/category
+    if (raw.startsWith(".")) {
+        const rest = raw.slice(1);
+        if (rest.startsWith(" ")) {
+            return {
+                mode: "attachments",
+                extensionFilter: null,
+                search: rest.slice(1),
+                prefixApplied: true,
+            };
+        }
 
-		const firstSpace = rest.indexOf(" ");
-		if (firstSpace === -1) {
-			return {
-				mode: currentMode,
-				extensionFilter: currentExtension,
-				search: raw,
-				prefixApplied: false,
-			};
-		}
+        const firstSpace = rest.indexOf(" ");
+        if (firstSpace === -1) {
+            return {
+                mode: currentMode,
+                extensionFilter: currentExtension,
+                search: raw,
+                prefixApplied: false,
+            };
+        }
 
-		const token = rest.slice(0, firstSpace).toLowerCase();
-		const remainder = rest.slice(firstSpace + 1).trimStart();
-		return {
-			mode: "attachments",
-			extensionFilter: token,
-			search: remainder,
-			prefixApplied: true,
-		};
-	}
+        const token = rest.slice(0, firstSpace).toLowerCase();
+        const remainder = rest.slice(firstSpace + 1).trimStart();
+        return {
+            mode: "attachments",
+            extensionFilter: token.startsWith(".") ? token.slice(1) : token,
+            search: remainder,
+            prefixApplied: true,
+        };
+    }
 
 	return {
 		mode: currentMode,
@@ -103,15 +98,18 @@ export function isNoteExtension(extension: string): boolean {
 }
 
 export function matchesAttachmentExtension(extension: string, filter: string | null): boolean {
-	const normalized = extension.toLowerCase();
-	if (filter) {
-		const category = ATTACHMENT_CATEGORIES[filter];
-		if (category) {
-			return category.includes(normalized);
-		}
-		return normalized === filter;
-	}
-	return !NOTE_EXTENSIONS.has(normalized);
+    const normalized = extension.toLowerCase();
+    if (filter) {
+        const category = ATTACHMENT_CATEGORIES[filter];
+        if (category) {
+            return category.includes(normalized);
+        }
+        const normalizedFilter = filter.startsWith(".") ? filter.slice(1) : filter;
+        return normalized === normalizedFilter;
+    }
+    // Exclude extensionless files from attachments view
+    if (!normalized) return false;
+    return !NOTE_EXTENSIONS.has(normalized);
 }
 
 export function resolveAttachmentCategory(filter: string | null): string[] | null {
@@ -132,9 +130,9 @@ export function getLeafFilePath(leaf: WorkspaceLeaf): string | null {
 }
 
 export interface LeafDescriptor {
-	leaf: WorkspaceLeaf;
-	viewType: string;
-	path: string | null;
+    leaf: WorkspaceLeaf;
+    viewType: string;
+    path: string | null;
 }
 
 const IGNORED_VIEW_TYPES = new Set([
@@ -146,17 +144,40 @@ const IGNORED_VIEW_TYPES = new Set([
 ]);
 
 export function collectFileLeaves(app: App): LeafDescriptor[] {
-	const leaves: LeafDescriptor[] = [];
-	app.workspace.iterateAllLeaves((leaf) => {
-		const viewType = leaf.view.getViewType();
-		if (IGNORED_VIEW_TYPES.has(viewType)) {
-			return;
-		}
-		const path = getLeafFilePath(leaf);
-		if (!path) {
-			return;
-		}
-		leaves.push({ leaf, viewType, path });
-	});
-	return leaves;
+    const leaves: LeafDescriptor[] = [];
+    app.workspace.iterateAllLeaves((leaf) => {
+        const viewType = leaf.view.getViewType();
+        if (IGNORED_VIEW_TYPES.has(viewType)) {
+            return;
+        }
+        const path = getLeafFilePath(leaf);
+        if (!path) {
+            return;
+        }
+        leaves.push({ leaf, viewType, path });
+    });
+    return leaves;
+}
+
+// --- Exclusion helpers (shared by index + modal) ---
+export interface ExclusionMatcher {
+    exact: string;
+    prefix: string;
+}
+
+export function normalizePath(path: string): string {
+    return path.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+export function buildExclusionMatchers(paths: string[]): ExclusionMatcher[] {
+    return paths.map((raw) => {
+        const normalized = normalizePath(raw);
+        const prefix = normalized.endsWith("/") ? normalized : `${normalized}/`;
+        return { exact: normalized, prefix };
+    });
+}
+
+export function isExcluded(path: string, matchers: ExclusionMatcher[]): boolean {
+    const normalized = normalizePath(path);
+    return matchers.some((m) => normalized === m.exact || normalized.startsWith(m.prefix));
 }
