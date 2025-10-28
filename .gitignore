@@ -26,3 +26,5 @@ main.js
 
 # LLM files
 agents.md
+AGENTS.md
+cache/

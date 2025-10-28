@@ -24,7 +24,8 @@ const ctx = await esbuild.build({
     // Node builtins (not bundled)
     "fs",
     "path",
-    "os"
+    "os",
+    "better-sqlite3"
   ],
   define: {
     "process.env.NODE_ENV": JSON.stringify(isProd ? "production" : "development"),
@@ -52,7 +53,8 @@ if (!isProd) {
       "@lezer/common",
       "fs",
       "path",
-      "os"
+      "os",
+      "better-sqlite3"
     ],
     define: {
       "process.env.NODE_ENV": JSON.stringify("development"),

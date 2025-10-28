@@ -19,7 +19,15 @@ describe("detectPrefix", () => {
 		});
 	});
 
-    // headings prefix removed
+    it("returns heading mode when query starts with '# '", () => {
+        const result = detectPrefix("# agenda", defaultMode, null);
+        expect(result).toEqual({
+            mode: "headings",
+            extensionFilter: null,
+            search: "agenda",
+            prefixApplied: true,
+        });
+    });
 
 	it("returns directory mode when query starts with '/ '", () => {
 		const result = detectPrefix("/ projects", defaultMode, null);

@@ -1,13 +1,16 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, TFile } from "obsidian";
 import { OmniSwitchSettings, migrateSettings } from "./src/settings";
 import { SearchIndex } from "./src/search";
 import { OmniSwitchModal, type OmniSwitchModalOptions } from "./src/omni-switch-modal";
 import { OmniSwitchSettingTab } from "./src/settings/tab";
-import { collectFileLeaves } from "./src/search/utils";
+import { collectFileLeaves, isNoteExtension } from "./src/search/utils";
+import { HeadingSearchIndex } from "./src/headings";
 
 export default class OmniSwitchPlugin extends Plugin {
     settings: OmniSwitchSettings;
     private index: SearchIndex;
+    private headingSearch: HeadingSearchIndex | null = null;
+    private headingInitPromise: Promise<void> | null = null;
     private usageSaveTimer: number | null = null;
     private startupTimings: { step: string; ms: number }[] = [];
 
@@ -15,14 +18,6 @@ export default class OmniSwitchPlugin extends Plugin {
         const end = (typeof performance !== "undefined" ? performance.now() : Date.now());
         this.startupTimings.push({ step, ms: Math.round(end - start) });
     }
-
-	private readonly handleVaultMutation = (): void => {
-		this.markIndexDirty();
-	};
-
-	private readonly handleMetadataChange = (): void => {
-		this.markIndexDirty();
-	};
 
     async onload(): Promise<void> {
         const tAll = (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -33,16 +28,56 @@ export default class OmniSwitchPlugin extends Plugin {
 
         t = (typeof performance !== "undefined" ? performance.now() : Date.now());
         this.index = new SearchIndex(this.app);
+        this.headingSearch = new HeadingSearchIndex(this.app, this.manifest.id);
+        this.headingSearch.setDebugMode(this.settings.debug === true);
+        this.headingSearch.setExcludedPaths(this.settings.excludedPaths);
         this.timing("createIndex", t);
 
-        t = (typeof performance !== "undefined" ? performance.now() : Date.now());
-        this.registerEvent(this.app.vault.on("create", this.handleVaultMutation));
-        this.registerEvent(this.app.vault.on("delete", this.handleVaultMutation));
-        this.registerEvent(this.app.vault.on("rename", this.handleVaultMutation));
-        this.registerEvent(this.app.vault.on("modify", this.handleVaultMutation));
-        this.registerEvent(this.app.metadataCache.on("changed", this.handleMetadataChange));
-        this.registerEvent(this.app.metadataCache.on("resolved", this.handleMetadataChange));
-        this.timing("registerEvents", t);
+        this.app.workspace.onLayoutReady(() => {
+            const tInit = (typeof performance !== "undefined" ? performance.now() : Date.now());
+            this.headingInitPromise = (async () => {
+                if (!this.headingSearch) return;
+                try {
+                    await this.headingSearch.initialize();
+                    if (this.headingSearch.status.indexed === false) {
+                        await this.headingSearch.refresh();
+                    }
+                } catch (error) {
+                    console.warn("OmniSwitch: heading search initialization failed", error);
+                }
+            })();
+            this.headingInitPromise?.finally(() => {
+                this.timing("createIndex", tInit);
+            });
+
+            const tEvents = (typeof performance !== "undefined" ? performance.now() : Date.now());
+            this.registerEvent(this.app.vault.on("create", (abstract) => {
+                if (abstract instanceof TFile && this.isNoteFile(abstract)) {
+                    this.headingSearch?.markDirty(abstract.path);
+                }
+                this.markIndexDirty();
+            }));
+            this.registerEvent(this.app.vault.on("delete", (abstract) => {
+                if (abstract instanceof TFile && this.isNoteFile(abstract)) {
+                    this.headingSearch?.removePathImmediately(abstract.path);
+                }
+                this.markIndexDirty();
+            }));
+            this.registerEvent(this.app.vault.on("rename", (abstract, oldPath) => {
+                if (abstract instanceof TFile && this.isNoteFile(abstract)) {
+                    this.headingSearch?.markDirty(abstract.path);
+                    this.headingSearch?.removePathImmediately(oldPath);
+                }
+                this.markIndexDirty();
+            }));
+            this.registerEvent(this.app.vault.on("modify", (abstract) => {
+                if (abstract instanceof TFile && this.isNoteFile(abstract)) {
+                    this.headingSearch?.markDirty(abstract.path);
+                }
+                this.markIndexDirty();
+            }));
+            this.timing("registerEvents", tEvents);
+        });
 
         t = (typeof performance !== "undefined" ? performance.now() : Date.now());
         this.addCommand({
@@ -62,7 +97,13 @@ export default class OmniSwitchPlugin extends Plugin {
 			},
 		});
 
-        // headings mode removed
+		this.addCommand({
+			id: "omniswitch-open-headings",
+			name: "Search vault headings",
+			callback: async () => {
+				await this.openOmniSwitch({ initialMode: "headings" });
+			},
+		});
 
 		this.addCommand({
 			id: "omniswitch-open-commands",
@@ -141,20 +182,53 @@ export default class OmniSwitchPlugin extends Plugin {
     private async openOmniSwitch(options?: OmniSwitchModalOptions): Promise<void> {
         await this.ensureLayoutReady();
         await this.index.refresh(this.settings);
-        const modal = new OmniSwitchModal(this.app, () => this.index.getItems(), {
+        await this.ensureHeadingReady();
+
+        let headingProvider = this.headingSearch;
+        if (this.settings.debug) {
+            console.info("OmniSwitch: openOmniSwitch invoked", {
+                mode: options?.initialMode ?? "files",
+                headingStatus: headingProvider?.status ?? null
+            });
+        }
+        if (headingProvider && (!headingProvider.status.supported || !headingProvider.status.ready)) {
+            headingProvider = null;
+        }
+
+        const modalOptions: OmniSwitchModalOptions = {
             ...options,
             excludedPaths: this.settings.excludedPaths,
             debug: this.settings.debug === true,
             maxSuggestions: this.settings.maxSuggestions,
             engineTopPercent: this.settings.engineTopPercent,
-        });
-        // Pass frequency map + weight to modal for ranking
+            headingSearch: headingProvider,
+        };
+        if (modalOptions.initialMode === "headings" && !headingProvider) {
+            modalOptions.initialMode = "files";
+            new Notice("Heading search is unavailable on this platform. Falling back to note search.");
+        }
+        const modal = new OmniSwitchModal(this.app, () => this.index.getItems(), modalOptions);
+        if (headingProvider) {
+            const refreshPromise = headingProvider.refresh();
+            refreshPromise
+                .then(() => {
+                    modal.handleHeadingIndexReady();
+                })
+                .catch((error) => {
+                    console.warn("OmniSwitch: heading search refresh failed", error);
+                    modal.handleHeadingIndexError(error);
+                });
+        }
         (modal as unknown as { frequencyMap?: Record<string, number>; freqBoost?: number; modifiedBoost?: number; rerankTopK?: number }).frequencyMap = this.settings.openCounts ?? {};
         const freqWeight = Math.max(0, Math.min(100, this.settings.tieBreakFreqPercent ?? 70)) / 100;
         (modal as unknown as { freqBoost?: number }).freqBoost = freqWeight;
         (modal as unknown as { modifiedBoost?: number }).modifiedBoost = 1 - freqWeight;
-        // rerankTopK now computed dynamically in the modal from engineTopPercent or maxSuggestions fallback
         modal.open();
+    }
+
+    private isNoteFile(file: TFile): boolean {
+        const ext = file.extension?.toLowerCase() ?? "";
+        return isNoteExtension(ext);
     }
 
 	private async ensureLayoutReady(): Promise<void> {
@@ -166,6 +240,25 @@ export default class OmniSwitchPlugin extends Plugin {
 		});
 	}
 
+	private async ensureHeadingReady(): Promise<void> {
+		if (!this.headingSearch) {
+			return;
+		}
+		if (this.headingInitPromise) {
+			if (this.settings.debug) {
+				console.info("OmniSwitch: waiting for heading init");
+			}
+			try {
+				await this.headingInitPromise;
+			} finally {
+				this.headingInitPromise = null;
+				if (this.settings.debug) {
+					console.info("OmniSwitch: heading init resolved");
+				}
+			}
+		}
+	}
+
 	markIndexDirty(): void {
 		if (this.index) {
 			this.index.markDirty();
@@ -175,6 +268,13 @@ export default class OmniSwitchPlugin extends Plugin {
     async rebuildIndex(): Promise<void> {
         this.markIndexDirty();
         await this.index.refresh(this.settings);
+        if (this.headingSearch) {
+            this.headingSearch.markDirty();
+            await this.ensureHeadingReady();
+            if (this.headingSearch.status.supported) {
+                await this.headingSearch.refresh();
+            }
+        }
         new Notice("OmniSwitch index rebuilt.");
     }
 
@@ -186,6 +286,10 @@ export default class OmniSwitchPlugin extends Plugin {
     async saveSettings(): Promise<void> {
         await this.saveData(this.settings);
         this.markIndexDirty();
+        if (this.headingSearch) {
+            this.headingSearch.setExcludedPaths(this.settings.excludedPaths);
+            this.headingSearch.setDebugMode(this.settings.debug === true);
+        }
     }
 
     async debugLog(): Promise<void> {
@@ -218,6 +322,9 @@ export default class OmniSwitchPlugin extends Plugin {
         console.log("Index stats:", { total: items.length, files, notes, attachments: atts, folders, commands });
         console.log("Excluded paths:", this.settings.excludedPaths);
         console.log("Attachment prefix:", ".(ext/category)");
+        if (this.headingSearch) {
+            console.log("Heading index status:", this.headingSearch.status);
+        }
         console.groupEnd();
     }
 }

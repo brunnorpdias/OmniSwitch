@@ -1,6 +1,6 @@
 import type { App, WorkspaceLeaf } from "obsidian";
 
-export type OmniSwitchMode = "files" | "commands" | "attachments" | "directories";
+export type OmniSwitchMode = "files" | "commands" | "attachments" | "headings" | "directories";
 
 export interface PrefixDetectionResult {
 	mode: OmniSwitchMode;
@@ -50,7 +50,14 @@ export function detectPrefix(
 		};
 	}
 
-    // '#' (headings) prefix removed
+    if (raw.startsWith("# ")) {
+        return {
+            mode: "headings",
+            extensionFilter: null,
+            search: raw.slice(2),
+            prefixApplied: true,
+        };
+    }
 
     // Attachment search: switch from legacy bang (!) to dot (.) prefix.
     // Examples: ". " → attachments (no filter); ".pdf <query>" → attachments filtered by extension/category

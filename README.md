@@ -6,6 +6,7 @@ OmniSwitch is a fast vault‑wide switcher that keeps your keyboard at the cente
 - Limit results on the fly with lightweight prefixes (`/`, `>`, `.`).
 - Open existing tabs instead of duplicating them, or spawn new panes with `Cmd/Ctrl + Enter`.
 - Browse folders inline with `/ `: drill into directories, open their files, and step back with `Backspace`.
+- Search headings inside notes using the `# ` prefix (desktop builds index them with SQLite FTS).
 - Follow the active mode from the pill label beside the input (Notes, Commands, Attachments, Folders).
 - Log the currently open editor leaves to the console for debugging complex layouts.
 
@@ -21,6 +22,7 @@ Open the switcher with **Cmd/Ctrl + K** *(command id: `omniswitch-open`)* and us
  
 | `> ` | Commands | Vault commands (same list as Command Palette). |
 | `/ ` | Folders | Vault folders; press Enter to drill into the selected directory. |
+| `# ` | Headings | Headings inside markdown notes (desktop only). |
 | `. ` | Attachments | All non‑note attachments. |
 | `.image ` | Attachments | Image files (`avif`, `bmp`, `gif`, `jpeg`, `jpg`, `png`, `svg`, `webp`). |
 | `.audio ` | Attachments | Audio files (`flac`, `m4a`, `mp3`, `ogg`, `wav`, `webm`, `3gp`). |
@@ -62,13 +64,28 @@ Pipeline (for Notes and Attachments)
 
 Notes
 - Empty query (Notes) shows “Recents” and does not apply this engine pipeline.
-- Headings are not indexed (heading mode is a placeholder).
 - Folders and Commands have their own flows and don’t use the engine refinement.
 
 Indexing
-- Single pass vault scan: files (`TFile`) and folders (`TFolder` tree). Headings are not indexed.
+- Single pass vault scan: files (`TFile`) and folders (`TFolder` tree). Headings are collected on desktop builds using a local SQLite cache; the index is refreshed in the background and only reprocesses notes whose `mtime` has changed.
 - Excluded paths are honored everywhere (engine and recents).
 - Frequency is persisted as a simple open counter (path → count) using `workspace.on('file-open')` with debounced saves.
+
+Headings (desktop)
+- The first launch builds a SQLite index (`cache/headings.db`) beside the plugin.
+- Subsequent launches diff the vault against the database and only reindex changed/renamed notes.
+- Non-markdown files (attachments, media, canvas, etc.) are ignored by the heading indexer.
+- Debug mode logs refresh summaries (`reindex`, `removed`, timings) so you can monitor long-running updates.
+
+## Architecture Overview
+
+- **Lifecycle:** OmniSwitch waits for Obsidian's layout to finish before wiring up vault listeners or running the heading indexer. This prevents background work from blocking vault startup.
+- **Search engines:** Notes and attachments use Fuse.js with tie-breaking on open frequency and modification time; headings use a SQLite FTS5 database stored under `cache/headings.db` (desktop only).
+- **Incremental indexing:** Each refresh snapshots the vault once, compares `mtime` values with the database, and touches only notes that changed path or timestamp; renamed files first remove the old row to keep FTS clean.
+- **Event filtering:** Vault events are filtered to markdown notes before touching the heading indexer; attachments and other file types bypass the SQLite pipeline entirely.
+- **Modal separation:** `SearchIndex` supplies items for the modal, while `HeadingSearchIndex` runs in the background; the modal listens for completion callbacks so UI updates never block on indexing.
+- **Debug visibility:** With the Debug setting enabled the console reports diff statistics and timings, making it easy to spot long-running refreshes when working on large vaults.
+- **Startup safety:** Refreshes begin only after `workspace.onLayoutReady` fires, so the plugin never blocks Obsidian's “Loading vault…” screen.
 
 ## Settings
 
@@ -119,6 +136,9 @@ Indexing
 ### Setup
 ```bash
 npm install
+# rebuild better-sqlite3 for the Obsidian Electron runtime
+npm rebuild better-sqlite3 --runtime=electron --target=<electron-version> --dist-url=https://electronjs.org/headers
+# (inside Obsidian's dev console run `process.versions.electron` to find the exact version)
 ```
 
 ### Available scripts
@@ -128,6 +148,8 @@ npm install
 | `npm run build` | Type-check + production bundle (outputs `main.js`). |
 | `npm run test` | Execute unit tests with Vitest. |
 | `npm run version` | Bump plugin + manifest versions (uses `scripts/version-bump.mjs`). |
+
+> **Note:** The headings index relies on `better-sqlite3`, which must be rebuilt for the Electron version that ships with your Obsidian build (see the `rebuild` command above). The generated `cache/headings.db` is desktop-only; mobile builds fall back to note search.
 
 Place the repository inside your vault under `.obsidian/plugins/omniswitch` for live testing. After `npm run build`, enable the plugin in **Settings → Community Plugins**.
 

@@ -3,6 +3,7 @@ import {
     FileView,
     FuzzyMatch,
     FuzzySuggestModal,
+	MarkdownView,
 	Notice,
 	Platform,
 	TFile,
@@ -13,7 +14,8 @@ import {
     type SearchResult,
 } from "obsidian";
 import Fuse from "fuse.js";
-import type { SearchItem, FileSearchItem, FolderSearchItem } from "./search/types";
+import type { SearchItem, FileSearchItem, FolderSearchItem, HeadingSearchItem } from "./search/types";
+import type { HeadingSearchIndex } from "./headings";
 import { getCommandManager } from "./obsidian-helpers";
 import {
 	collectFileLeaves,
@@ -35,6 +37,7 @@ export interface OmniSwitchModalOptions {
     debug?: boolean;
     maxSuggestions?: number;
     engineTopPercent?: number;
+    headingSearch?: HeadingSearchIndex | null;
 }
 
 type ItemSupplier = () => SearchItem[];
@@ -42,6 +45,7 @@ type ItemSupplier = () => SearchItem[];
 export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	private mode: OmniSwitchMode;
 	private extensionFilter: string | null;
+	private headingSearch: HeadingSearchIndex | null;
 	private readonly initialQuery: string;
 	private isProgrammaticInput = false;
 	private pendingNewLeaf = false;
@@ -146,6 +150,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
         super(app);
         this.mode = options.initialMode ?? "files";
         this.extensionFilter = options.extensionFilter ?? null;
+        this.headingSearch = options.headingSearch ?? null;
         this.initialQuery = options.initialQuery ?? "";
         this.debug = options.debug === true;
         if (options.excludedPaths) {
@@ -181,11 +186,39 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		super.onClose();
 	}
 
+	public handleHeadingIndexReady(): void {
+		if (this.debug) {
+			console.info("OmniSwitch: heading index ready");
+		}
+		window.setTimeout(() => {
+			if (!this.headingSearch) {
+				return;
+			}
+			this.updateModeUI();
+			if (this.mode === "headings") {
+				this.refreshSuggestions();
+			}
+		}, 0);
+	}
+
+	public handleHeadingIndexError(error: unknown): void {
+		if (this.debug) {
+			console.warn("OmniSwitch: heading index error", error);
+		}
+		if (this.mode === "headings") {
+			new Notice("Heading search failed to refresh. Showing cached results.");
+		}
+		this.updateModeUI();
+	}
+
 	getItems(): SearchItem[] {
 		return this.supplyItems();
 	}
 
     getSuggestions(query: string): FuzzyMatch<SearchItem>[] {
+        if (this.mode === "headings") {
+            return this.getHeadingSuggestions(query);
+        }
         if (this.mode === "directories") {
             return this.getDirectorySuggestions(query);
         }
@@ -261,6 +294,23 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return matches;
 	}
 
+	private getHeadingSuggestions(query: string): FuzzyMatch<SearchItem>[] {
+		const provider = this.headingSearch;
+		const status = provider?.status;
+		if (!provider || !status || !status.ready || !status.indexed) {
+			return [];
+		}
+		const trimmed = query.trim();
+		if (trimmed.length < 2) {
+			return [];
+		}
+		const results = provider.search(trimmed, { limit: this.maxSuggestions ?? 20 });
+		if (results.length === 0) {
+			return [];
+		}
+		return results.map((item) => ({ item, match: this.createScoreMatch(item.score) }));
+	}
+
 	getItemText(item: SearchItem): string {
         switch (item.type) {
             case "file":
@@ -269,6 +319,8 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
                 return `${item.command.name} (${item.command.id})`;
             case "folder":
                 return this.folderPath(item.folder);
+            case "heading":
+                return `${item.file.path}#${item.slug}`;
         }
 	}
 
@@ -423,7 +475,13 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				subtitle.addClass("omniswitch-suggestion__subtitle--hidden");
 				break;
 			}
-                
+			case "heading": {
+				title.setText(item.heading);
+				const lineLabel = `#${item.line + 1}`;
+				subtitle.setText(`${item.file.path} ${lineLabel}`);
+				break;
+			}
+			
 			case "folder": {
 				title.setText(`📂  ${this.getFolderTitle(item.folder)}`);
 				subtitle.empty();
@@ -466,6 +524,9 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				break;
 			case "command":
 				this.runCommand(item.command.id);
+				break;
+			case "heading":
+				await this.openHeading(item, openInNewPane);
 				break;
                 
 			default:
@@ -581,25 +642,51 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return { score: 0, matches: [] };
 	}
 
+	private createScoreMatch(score: number): SearchResult {
+		const normalized = Number.isFinite(score) ? score : 0;
+		return { score: normalized, matches: [] };
+	}
+
     private updateModeUI(): void {
         this.applyModeClass();
 
-        switch (this.mode) {
-            case "files":
-                this.setPlaceholder("Search vault…");
-                this.setInstructions(this.defaultInstructions());
-                this.emptyStateText = "No files found";
-                break;
-            case "commands":
-                this.setPlaceholder("Search commands");
-                this.setInstructions([{ command: "enter", purpose: "run" }]);
-                this.emptyStateText = "No commands found";
-                break;
-            case "attachments": {
-                const category = resolveAttachmentCategory(this.extensionFilter);
-                const placeholder = category
-                    ? `Search ${this.extensionFilter} attachments`
-                    : this.extensionFilter
+		switch (this.mode) {
+			case "files":
+				this.setPlaceholder("Search vault…");
+				this.setInstructions(this.defaultInstructions());
+				this.emptyStateText = "No files found";
+				break;
+			case "commands":
+				this.setPlaceholder("Search commands");
+				this.setInstructions([{ command: "enter", purpose: "run" }]);
+				this.emptyStateText = "No commands found";
+				break;
+		case "headings": {
+			const status = this.headingSearch?.status;
+			if (!this.headingSearch || status?.supported === false) {
+				this.setPlaceholder("Heading search unavailable");
+				this.setInstructions([{ command: "esc", purpose: "cancel" }]);
+				this.emptyStateText = "Heading search requires desktop & SQLite.";
+			} else if (!status || !status.indexed) {
+				this.setPlaceholder("Building heading index…");
+				this.setInstructions([{ command: "esc", purpose: "cancel" }]);
+				this.emptyStateText = "Indexing headings…";
+			} else if (status.refreshing) {
+				this.setPlaceholder("Refreshing headings…");
+				this.setInstructions(this.openInstructions());
+				this.emptyStateText = "Updating headings…";
+			} else {
+				this.setPlaceholder("Search headings (# )");
+				this.setInstructions(this.openInstructions());
+				this.emptyStateText = "No headings found";
+			}
+			break;
+		}
+			case "attachments": {
+				const category = resolveAttachmentCategory(this.extensionFilter);
+				const placeholder = category
+					? `Search ${this.extensionFilter} attachments`
+					: this.extensionFilter
                         ? `Search .${this.extensionFilter} files`
                         : "Search attachments (.ext)";
                 this.setPlaceholder(placeholder);
@@ -617,7 +704,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	}
 
 	private applyModeClass(): void {
-        const classes: OmniSwitchMode[] = ["files", "commands", "attachments", "directories"];
+        const classes: OmniSwitchMode[] = ["files", "commands", "attachments", "headings", "directories"];
 		for (const mode of classes) {
 			this.modalEl.classList.remove(`omniswitch-mode-${mode}`);
 		}
@@ -629,6 +716,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
             { command: "enter", purpose: "open" },
             { command: this.newTabShortcutLabel(), purpose: "new tab" },
             { command: "> ", purpose: "commands" },
+            { command: "# ", purpose: "headings" },
             { command: ".(ext/category)", purpose: "attachments" },
             { command: "/ ", purpose: "folders" },
         ];
@@ -679,6 +767,8 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 				return "Commands";
 			case "attachments":
 				return "Attachments";
+			case "headings":
+				return "Headings";
                 case "directories":
                     return "Folders";
 			default:
@@ -693,21 +783,23 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return this.getDirectoryCandidates().some((item) => item.type === "file");
 	}
 
-    private filterItems(items: SearchItem[], mode: OmniSwitchMode, extensionFilter: string | null): SearchItem[] {
-        switch (mode) {
-            case "commands":
-                return items.filter((item) => item.type === "command");
-            case "attachments":
-                return items.filter(
-                    (item) =>
-                        item.type === "file"
-                        && this.matchesAttachmentFilter(item.file, extensionFilter),
-                );
-            
-            case "files":
-            default:
-                return items.filter((item) => {
-                    if (item.type !== "file") {
+	private filterItems(items: SearchItem[], mode: OmniSwitchMode, extensionFilter: string | null): SearchItem[] {
+		switch (mode) {
+			case "commands":
+				return items.filter((item) => item.type === "command");
+			case "attachments":
+				return items.filter(
+					(item) =>
+						item.type === "file"
+						&& this.matchesAttachmentFilter(item.file, extensionFilter),
+				);
+			case "headings":
+				return [];
+			
+			case "files":
+			default:
+				return items.filter((item) => {
+					if (item.type !== "file") {
                         return false;
                     }
                     return isNoteExtension(item.file.extension);
@@ -1040,6 +1132,9 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	}
 
 	private getExtensionLabel(item: SearchItem): string | null {
+		if (item.type === "heading") {
+			return `H${Math.max(1, item.level || 1)}`;
+		}
 		if (item.type !== "file") {
 			return null;
 		}
@@ -1073,6 +1168,25 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		}
 
 		return false;
+	}
+
+	private async openHeading(item: HeadingSearchItem, newLeaf: boolean): Promise<void> {
+		await this.openFile(item.file, newLeaf);
+		await this.ensureLayoutReady();
+		const entry = collectFileLeaves(this.app).find((leaf) => leaf.path === item.file.path);
+		const leaf = entry?.leaf ?? this.app.workspace.activeLeaf ?? undefined;
+		if (!leaf) {
+			return;
+		}
+		const view = leaf.view;
+		if (view instanceof MarkdownView) {
+			const editor = view.editor;
+			if (editor) {
+				const line = Math.max(0, item.line);
+				editor.setCursor({ line, ch: 0 });
+				editor.scrollIntoView({ from: { line, ch: 0 }, to: { line, ch: 0 } }, true);
+			}
+		}
 	}
 
 	private async openFile(file: TFile, newLeaf: boolean): Promise<void> {

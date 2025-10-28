@@ -1,6 +1,6 @@
 {
   "excludedPaths": [],
-  "debug": false,
+  "debug": true,
   "maxSuggestions": 20,
   "tieBreakFreqPercent": 70,
   "engineTopPercent": 20,
@@ -17,10 +17,11 @@
     "notes/note_02849.md": 1,
     "notes/note_08280.md": 3,
     "notes/note_02999.md": 9,
-    "notes/note_02990.md": 3,
+    "notes/note_02990.md": 5,
     "9999.md": 6,
     "test.md": 1,
     "999.md": 10,
-    "notes/note_09995.md": 1
+    "notes/note_09995.md": 1,
+    "Untitled 3.md": 4
   }
 }
