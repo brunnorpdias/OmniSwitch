@@ -3,7 +3,7 @@
 OmniSwitch is a fast vault‑wide switcher that keeps your keyboard at the center of everything. From a single command (`Cmd/Ctrl + K`) you can:
 
 - Jump to notes, attachments, commands, and folders with fuzzy search.
-- Limit results on the fly with lightweight prefixes (`/`, `>`, `.`).
+- Limit results on the fly with lightweight prefixes (`/`, `>`, `.`, `#`).
 - Open existing tabs instead of duplicating them, or spawn new panes with `Cmd/Ctrl + Enter`.
 - Browse folders inline with `/ `: drill into directories, open their files, and step back with `Backspace`.
 - Search headings inside notes using the `# ` prefix (desktop builds index them with SQLite FTS).
@@ -137,7 +137,7 @@ Headings (desktop)
 ```bash
 npm install
 # rebuild better-sqlite3 for the Obsidian Electron runtime
-npm rebuild better-sqlite3 --runtime=electron --target=<electron-version> --dist-url=https://electronjs.org/headers
+npm run rebuild-sqlite
 # (inside Obsidian's dev console run `process.versions.electron` to find the exact version)
 ```
 
