@@ -25,7 +25,7 @@ const ctx = await esbuild.build({
     "fs",
     "path",
     "os",
-    "better-sqlite3"
+    "buffer",
   ],
   define: {
     "process.env.NODE_ENV": JSON.stringify(isProd ? "production" : "development"),
@@ -54,7 +54,7 @@ if (!isProd) {
       "fs",
       "path",
       "os",
-      "better-sqlite3"
+      "buffer",
     ],
     define: {
       "process.env.NODE_ENV": JSON.stringify("development"),
@@ -63,4 +63,3 @@ if (!isProd) {
   await watch.watch();
   console.log("esbuild watching for changes...");
 }
-

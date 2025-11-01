@@ -1,18 +1,54 @@
 import { Notice, Plugin, TFile } from "obsidian";
-import { OmniSwitchSettings, migrateSettings } from "./src/settings";
+import { DEFAULT_SETTINGS, OmniSwitchSettings, migrateSettings } from "./src/settings";
 import { SearchIndex } from "./src/search";
 import { OmniSwitchModal, type OmniSwitchModalOptions } from "./src/omni-switch-modal";
 import { OmniSwitchSettingTab } from "./src/settings/tab";
 import { collectFileLeaves, isNoteExtension } from "./src/search/utils";
-import { HeadingSearchIndex } from "./src/headings";
+import { MeilisearchIndex } from "./src/search/meilisearch-index";
 
 export default class OmniSwitchPlugin extends Plugin {
     settings: OmniSwitchSettings;
     private index: SearchIndex;
-    private headingSearch: HeadingSearchIndex | null = null;
-    private headingInitPromise: Promise<void> | null = null;
+    private contentIndex: MeilisearchIndex | null = null;
+    private contentInitPromise: Promise<void> | null = null;
     private usageSaveTimer: number | null = null;
     private startupTimings: { step: string; ms: number }[] = [];
+    private lastContentError: string | null = null;
+	private get debugEnabled(): boolean {
+		return this.settings?.debug === true;
+	}
+
+	private logDebug(...data: unknown[]): void {
+		if (this.debugEnabled) {
+			console.log(...data);
+		}
+	}
+
+	private logInfo(...data: unknown[]): void {
+		if (this.debugEnabled) {
+			console.info(...data);
+		}
+	}
+
+    private logWarn(...data: unknown[]): void {
+        if (this.debugEnabled) {
+            console.warn(...data);
+        }
+    }
+
+	private trackContentInit(promise: Promise<void>): Promise<void> {
+		const wrapped = promise
+			.catch((error) => {
+				this.logWarn("OmniSwitch: Meilisearch rebuild failed", error);
+			})
+			.finally(() => {
+				if (this.contentInitPromise === wrapped) {
+					this.contentInitPromise = null;
+				}
+			});
+		this.contentInitPromise = wrapped;
+		return wrapped;
+	}
 
     private timing(step: string, start: number): void {
         const end = (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -28,51 +64,41 @@ export default class OmniSwitchPlugin extends Plugin {
 
         t = (typeof performance !== "undefined" ? performance.now() : Date.now());
         this.index = new SearchIndex(this.app);
-        this.headingSearch = new HeadingSearchIndex(this.app, this.manifest.id);
-        this.headingSearch.setDebugMode(this.settings.debug === true);
-        this.headingSearch.setExcludedPaths(this.settings.excludedPaths);
+        this.contentIndex = new MeilisearchIndex(this.app);
+        this.contentIndex.setDebugMode(this.debugEnabled);
+        await this.reconfigureContentIndex(false);
         this.timing("createIndex", t);
 
-        this.app.workspace.onLayoutReady(() => {
-            const tInit = (typeof performance !== "undefined" ? performance.now() : Date.now());
-            this.headingInitPromise = (async () => {
-                if (!this.headingSearch) return;
-                try {
-                    await this.headingSearch.initialize();
-                    if (this.headingSearch.status.indexed === false) {
-                        await this.headingSearch.refresh();
-                    }
-                } catch (error) {
-                    console.warn("OmniSwitch: heading search initialization failed", error);
-                }
-            })();
-            this.headingInitPromise?.finally(() => {
-                this.timing("createIndex", tInit);
-            });
+		this.app.workspace.onLayoutReady(() => {
+			const tInit = (typeof performance !== "undefined" ? performance.now() : Date.now());
+			const rebuildPromise = this.reconfigureContentIndex(true, { fireAndForget: true });
+			rebuildPromise.finally(() => {
+				this.timing("createIndex", tInit);
+			});
 
-            const tEvents = (typeof performance !== "undefined" ? performance.now() : Date.now());
+			const tEvents = (typeof performance !== "undefined" ? performance.now() : Date.now());
             this.registerEvent(this.app.vault.on("create", (abstract) => {
                 if (abstract instanceof TFile && this.isNoteFile(abstract)) {
-                    this.headingSearch?.markDirty(abstract.path);
+                    this.contentIndex?.markDirty(abstract.path);
                 }
                 this.markIndexDirty();
             }));
             this.registerEvent(this.app.vault.on("delete", (abstract) => {
                 if (abstract instanceof TFile && this.isNoteFile(abstract)) {
-                    this.headingSearch?.removePathImmediately(abstract.path);
+                    this.contentIndex?.removePath(abstract.path);
                 }
                 this.markIndexDirty();
             }));
             this.registerEvent(this.app.vault.on("rename", (abstract, oldPath) => {
                 if (abstract instanceof TFile && this.isNoteFile(abstract)) {
-                    this.headingSearch?.markDirty(abstract.path);
-                    this.headingSearch?.removePathImmediately(oldPath);
+                    this.contentIndex?.markDirty(abstract.path);
+                    this.contentIndex?.removePath(oldPath);
                 }
                 this.markIndexDirty();
             }));
             this.registerEvent(this.app.vault.on("modify", (abstract) => {
                 if (abstract instanceof TFile && this.isNoteFile(abstract)) {
-                    this.headingSearch?.markDirty(abstract.path);
+                    this.contentIndex?.markDirty(abstract.path);
                 }
                 this.markIndexDirty();
             }));
@@ -136,6 +162,10 @@ export default class OmniSwitchPlugin extends Plugin {
 						path: entry.path,
 					};
 				});
+				if (!this.debugEnabled) {
+					new Notice("Enable OmniSwitch debug mode to log open tabs.");
+					return;
+				}
 				console.table(entries);
 				new Notice(`Logged ${entries.length} open file tab${entries.length === 1 ? "" : "s"} to the console.`);
 			},
@@ -182,18 +212,17 @@ export default class OmniSwitchPlugin extends Plugin {
     private async openOmniSwitch(options?: OmniSwitchModalOptions): Promise<void> {
         await this.ensureLayoutReady();
         await this.index.refresh(this.settings);
-        await this.ensureHeadingReady();
+        await this.ensureContentReady(false);
 
-        let headingProvider = this.headingSearch;
-        if (this.settings.debug) {
-            console.info("OmniSwitch: openOmniSwitch invoked", {
-                mode: options?.initialMode ?? "files",
-                headingStatus: headingProvider?.status ?? null
-            });
+        let provider =
+            this.contentIndex && this.settings.meilisearchEnabled ? this.contentIndex : null;
+        if (provider && !provider.status.reachable) {
+            provider = null;
         }
-        if (headingProvider && (!headingProvider.status.supported || !headingProvider.status.ready)) {
-            headingProvider = null;
-        }
+        this.logInfo("OmniSwitch: openOmniSwitch invoked", {
+            mode: options?.initialMode ?? "files",
+            meilisearch: provider?.status ?? null,
+        });
 
         const modalOptions: OmniSwitchModalOptions = {
             ...options,
@@ -201,25 +230,14 @@ export default class OmniSwitchPlugin extends Plugin {
             debug: this.settings.debug === true,
             maxSuggestions: this.settings.maxSuggestions,
             engineTopPercent: this.settings.engineTopPercent,
-            headingSearch: headingProvider,
+            contentSearch: provider,
         };
-        if (modalOptions.initialMode === "headings" && !headingProvider) {
+        if (modalOptions.initialMode === "headings" && !provider) {
             modalOptions.initialMode = "files";
-            new Notice("Heading search is unavailable on this platform. Falling back to note search.");
+            new Notice("Heading search requires Meilisearch. Falling back to note search.");
         }
         const modal = new OmniSwitchModal(this.app, () => this.index.getItems(), modalOptions);
-        if (headingProvider) {
-            const refreshPromise = headingProvider.refresh();
-            refreshPromise
-                .then(() => {
-                    modal.handleHeadingIndexReady();
-                })
-                .catch((error) => {
-                    console.warn("OmniSwitch: heading search refresh failed", error);
-                    modal.handleHeadingIndexError(error);
-                });
-        }
-        (modal as unknown as { frequencyMap?: Record<string, number>; freqBoost?: number; modifiedBoost?: number; rerankTopK?: number }).frequencyMap = this.settings.openCounts ?? {};
+        (modal as unknown as { frequencyMap?: Record<string, number>; freqBoost?: number; modifiedBoost?: number }).frequencyMap = this.settings.openCounts ?? {};
         const freqWeight = Math.max(0, Math.min(100, this.settings.tieBreakFreqPercent ?? 70)) / 100;
         (modal as unknown as { freqBoost?: number }).freqBoost = freqWeight;
         (modal as unknown as { modifiedBoost?: number }).modifiedBoost = 1 - freqWeight;
@@ -240,22 +258,77 @@ export default class OmniSwitchPlugin extends Plugin {
 		});
 	}
 
-	private async ensureHeadingReady(): Promise<void> {
-		if (!this.headingSearch) {
+	private async reconfigureContentIndex(rebuild: boolean, options?: { fireAndForget?: boolean }): Promise<void> {
+		if (!this.contentIndex) {
 			return;
 		}
-		if (this.headingInitPromise) {
-			if (this.settings.debug) {
-				console.info("OmniSwitch: waiting for heading init");
+		this.contentIndex.setExcludedPaths(this.settings.excludedPaths);
+		this.contentIndex.setDebugMode(this.debugEnabled);
+		if (!this.settings.meilisearchEnabled) {
+			this.contentIndex.setCredentials(null);
+			return;
+		}
+		const host =
+			this.settings.meilisearchHost && this.settings.meilisearchHost.trim().length > 0
+				? this.settings.meilisearchHost.trim()
+				: DEFAULT_SETTINGS.meilisearchHost!;
+		const notesIndex =
+			this.settings.meilisearchNotesIndex && this.settings.meilisearchNotesIndex.trim().length > 0
+				? this.settings.meilisearchNotesIndex.trim()
+				: DEFAULT_SETTINGS.meilisearchNotesIndex!;
+		const headingsIndex =
+			this.settings.meilisearchHeadingsIndex && this.settings.meilisearchHeadingsIndex.trim().length > 0
+				? this.settings.meilisearchHeadingsIndex.trim()
+				: DEFAULT_SETTINGS.meilisearchHeadingsIndex!;
+
+		this.contentIndex.setCredentials({
+			host,
+			apiKey: this.settings.meilisearchApiKey ?? null,
+			notesIndex,
+			headingsIndex,
+		});
+		try {
+			await this.contentIndex.initialize();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (this.lastContentError !== message) {
+				this.logWarn("OmniSwitch: initialization failed", message);
+				this.lastContentError = message;
 			}
-			try {
-				await this.headingInitPromise;
-			} finally {
-				this.headingInitPromise = null;
-				if (this.settings.debug) {
-					console.info("OmniSwitch: heading init resolved");
-				}
+			return;
+		}
+		const status = this.contentIndex.status;
+		if (!status.reachable) {
+			const message = status.lastError ? `Meilisearch unreachable: ${status.lastError}` : "Meilisearch unreachable.";
+			if (this.lastContentError !== message) {
+				new Notice(message);
+				this.lastContentError = message;
 			}
+			return;
+		}
+		this.lastContentError = null;
+		if (rebuild) {
+			const tracked = this.trackContentInit(this.contentIndex.requestRebuild());
+			if (options?.fireAndForget) {
+				return tracked;
+			}
+			await tracked;
+		}
+		return;
+	}
+
+	private async ensureContentReady(waitForCompletion = false): Promise<void> {
+		if (!this.contentIndex || !this.settings.meilisearchEnabled) {
+			return;
+		}
+		if (this.contentInitPromise) {
+			if (!waitForCompletion) {
+				this.logInfo("OmniSwitch: Meilisearch rebuild in progress; continuing without waiting.");
+				return;
+			}
+			this.logInfo("OmniSwitch: waiting for Meilisearch init");
+			await this.contentInitPromise;
+			this.logInfo("OmniSwitch: Meilisearch init resolved");
 		}
 	}
 
@@ -265,15 +338,12 @@ export default class OmniSwitchPlugin extends Plugin {
 		}
 	}
 
-    async rebuildIndex(): Promise<void> {
+    async rebuildIndex(options?: { refreshContent?: boolean }): Promise<void> {
+        const refreshContent = options?.refreshContent ?? true;
         this.markIndexDirty();
         await this.index.refresh(this.settings);
-        if (this.headingSearch) {
-            this.headingSearch.markDirty();
-            await this.ensureHeadingReady();
-            if (this.headingSearch.status.supported) {
-                await this.headingSearch.refresh();
-            }
+        if (refreshContent && this.contentIndex && this.settings.meilisearchEnabled) {
+            await this.reconfigureContentIndex(true);
         }
         new Notice("OmniSwitch index rebuilt.");
     }
@@ -286,11 +356,17 @@ export default class OmniSwitchPlugin extends Plugin {
     async saveSettings(): Promise<void> {
         await this.saveData(this.settings);
         this.markIndexDirty();
-        if (this.headingSearch) {
-            this.headingSearch.setExcludedPaths(this.settings.excludedPaths);
-            this.headingSearch.setDebugMode(this.settings.debug === true);
-        }
+        await this.reconfigureContentIndex(false);
+        this.contentIndex?.setDebugMode(this.debugEnabled);
     }
+
+	async reconfigureSearchBackend(options?: { fireAndForget?: boolean }): Promise<void> {
+		if (options?.fireAndForget) {
+			void this.reconfigureContentIndex(true, options);
+			return;
+		}
+		await this.reconfigureContentIndex(true, options);
+	}
 
     async debugLog(): Promise<void> {
         const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -315,6 +391,10 @@ export default class OmniSwitchPlugin extends Plugin {
             }
         }
 
+        if (!this.debugEnabled) {
+            new Notice("Enable OmniSwitch debug mode to print diagnostics to the console.");
+            return;
+        }
         console.groupCollapsed("OmniSwitch Debug");
         console.log("Startup timings (ms):");
         console.table(this.startupTimings.reduce<Record<string, number>>((acc, e) => { acc[e.step] = e.ms; return acc; }, {}));
@@ -322,9 +402,7 @@ export default class OmniSwitchPlugin extends Plugin {
         console.log("Index stats:", { total: items.length, files, notes, attachments: atts, folders, commands });
         console.log("Excluded paths:", this.settings.excludedPaths);
         console.log("Attachment prefix:", ".(ext/category)");
-        if (this.headingSearch) {
-            console.log("Heading index status:", this.headingSearch.status);
-        }
+        console.log("Meilisearch status:", this.contentIndex?.status ?? null);
         console.groupEnd();
     }
 }

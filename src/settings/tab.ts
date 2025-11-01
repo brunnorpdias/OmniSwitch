@@ -1,10 +1,11 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { formatExcludedPaths, parseExcludedPaths, type OmniSwitchSettings } from "./index";
+import { DEFAULT_SETTINGS, formatExcludedPaths, parseExcludedPaths, type OmniSwitchSettings } from "./index";
 
 interface SettingsHost {
     settings: OmniSwitchSettings;
     saveSettings(): Promise<void>;
-    rebuildIndex(): Promise<void>;
+    rebuildIndex(options?: { refreshContent?: boolean }): Promise<void>;
+    reconfigureSearchBackend(options?: { fireAndForget?: boolean }): Promise<void>;
 }
 
 export class OmniSwitchSettingTab extends PluginSettingTab {
@@ -90,6 +91,96 @@ export class OmniSwitchSettingTab extends PluginSettingTab {
         // Advanced section
         containerEl.createEl("h3", { text: "Advanced" });
 
+        const meiliSection = containerEl.createDiv({ cls: "omniswitch-settings__meili" });
+        meiliSection.createEl("h4", { text: "Meilisearch" });
+
+        new Setting(meiliSection)
+            .setName("Enable Meilisearch")
+            .setDesc("Use Meilisearch for note content and heading search (desktop only).")
+            .addToggle((toggle) => {
+                toggle.setValue(!!this.host.settings.meilisearchEnabled);
+                toggle.onChange(async (value) => {
+                    this.host.settings.meilisearchEnabled = value;
+                    await this.host.saveSettings();
+                    await this.host.reconfigureSearchBackend();
+                });
+            });
+
+        new Setting(meiliSection)
+            .setName("Host")
+            .setDesc("Protocol and host of the Meilisearch instance (e.g. http://127.0.0.1:7700).")
+            .addText((text) => {
+                text.setPlaceholder("http://127.0.0.1:7700");
+                text.setValue(this.host.settings.meilisearchHost ?? "");
+                text.onChange(async (value) => {
+                    this.host.settings.meilisearchHost = value.trim();
+                    await this.host.saveSettings();
+                });
+            });
+
+        new Setting(meiliSection)
+            .setName("API key")
+            .setDesc("Optional API key for authenticated Meilisearch instances.")
+            .addText((text) => {
+                text.inputEl.type = "password";
+                text.setPlaceholder("Leave blank for public access");
+                text.setValue(this.host.settings.meilisearchApiKey ?? "");
+                text.onChange(async (value) => {
+                    const trimmed = value.trim();
+                    this.host.settings.meilisearchApiKey = trimmed.length > 0 ? trimmed : null;
+                    await this.host.saveSettings();
+                });
+            })
+            .addExtraButton((btn) =>
+                btn
+                    .setIcon("reset")
+                    .setTooltip("Clear API key")
+                    .onClick(async () => {
+                        this.host.settings.meilisearchApiKey = null;
+                        await this.host.saveSettings();
+                        this.display();
+                    }));
+
+        new Setting(meiliSection)
+            .setName("Notes index")
+            .setDesc("UID of the index that stores full note content.")
+            .addText((text) => {
+                text.setPlaceholder(DEFAULT_SETTINGS.meilisearchNotesIndex ?? "omniswitch-notes");
+                text.setValue(this.host.settings.meilisearchNotesIndex ?? DEFAULT_SETTINGS.meilisearchNotesIndex ?? "omniswitch-notes");
+                text.onChange(async (value) => {
+                    this.host.settings.meilisearchNotesIndex = value.trim() || DEFAULT_SETTINGS.meilisearchNotesIndex;
+                    await this.host.saveSettings();
+                });
+            });
+
+        new Setting(meiliSection)
+            .setName("Headings index")
+            .setDesc("UID of the index that stores individual headings.")
+            .addText((text) => {
+                text.setPlaceholder(DEFAULT_SETTINGS.meilisearchHeadingsIndex ?? "omniswitch-headings");
+                text.setValue(this.host.settings.meilisearchHeadingsIndex ?? DEFAULT_SETTINGS.meilisearchHeadingsIndex ?? "omniswitch-headings");
+                text.onChange(async (value) => {
+                    this.host.settings.meilisearchHeadingsIndex = value.trim() || DEFAULT_SETTINGS.meilisearchHeadingsIndex;
+                    await this.host.saveSettings();
+                });
+            });
+
+        new Setting(meiliSection)
+            .setName("Apply Meilisearch changes")
+            .setDesc("Reconnect to Meilisearch and rebuild the remote indexes now.")
+            .addButton((button) =>
+                button
+                    .setButtonText("Apply & Rebuild")
+                    .setCta()
+                    .onClick(async () => {
+                        button.setDisabled(true);
+                        await this.host.reconfigureSearchBackend({ fireAndForget: true });
+                        await this.host.rebuildIndex({ refreshContent: false });
+                        button.setDisabled(false);
+                    }));
+
+        containerEl.createEl("h3", { text: "Advanced" });
+
         new Setting(containerEl)
             .setName("Rebuild index")
             .setDesc("Rescan the vault now.")
@@ -99,7 +190,7 @@ export class OmniSwitchSettingTab extends PluginSettingTab {
                     .setCta()
                     .onClick(async () => {
                         button.setDisabled(true);
-                        await this.host.rebuildIndex();
+                        await this.host.rebuildIndex({ refreshContent: true });
                         button.setDisabled(false);
                     }),
             );

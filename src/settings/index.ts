@@ -10,6 +10,16 @@ export interface OmniSwitchSettings {
     tieBreakFreqPercent?: number;
     /** Percent of top scoring results to return (10..50) */
     engineTopPercent?: number;
+    /** Enable Meilisearch integration */
+    meilisearchEnabled?: boolean;
+    /** Host (protocol + domain) for Meilisearch REST API */
+    meilisearchHost?: string;
+    /** API key used to authenticate with Meilisearch */
+    meilisearchApiKey?: string | null;
+    /** Index used for full note content */
+    meilisearchNotesIndex?: string;
+    /** Index used for headings */
+    meilisearchHeadingsIndex?: string;
 }
 
 export const DEFAULT_SETTINGS: OmniSwitchSettings = {
@@ -18,6 +28,11 @@ export const DEFAULT_SETTINGS: OmniSwitchSettings = {
     maxSuggestions: 20,
     tieBreakFreqPercent: 70,
     engineTopPercent: 20,
+    meilisearchEnabled: false,
+    meilisearchHost: "http://127.0.0.1:7700",
+    meilisearchApiKey: null,
+    meilisearchNotesIndex: "omniswitch-notes",
+    meilisearchHeadingsIndex: "omniswitch-headings",
 };
 
 export function parseExcludedPaths(input: string): string[] {
@@ -41,6 +56,11 @@ export function migrateSettings(data: unknown): OmniSwitchSettings {
         maxSuggestions: DEFAULT_SETTINGS.maxSuggestions,
         tieBreakFreqPercent: DEFAULT_SETTINGS.tieBreakFreqPercent,
         engineTopPercent: DEFAULT_SETTINGS.engineTopPercent,
+        meilisearchEnabled: DEFAULT_SETTINGS.meilisearchEnabled,
+        meilisearchHost: DEFAULT_SETTINGS.meilisearchHost,
+        meilisearchApiKey: DEFAULT_SETTINGS.meilisearchApiKey,
+        meilisearchNotesIndex: DEFAULT_SETTINGS.meilisearchNotesIndex,
+        meilisearchHeadingsIndex: DEFAULT_SETTINGS.meilisearchHeadingsIndex,
     } as OmniSwitchSettings;
 
 	const record = data as Record<string, unknown>;
@@ -79,6 +99,28 @@ export function migrateSettings(data: unknown): OmniSwitchSettings {
         // Clamp 10..50 in steps of 5
         const v = Math.max(10, Math.min(50, Math.round(raw / 5) * 5));
         settings.engineTopPercent = v;
+    }
+
+    if (typeof record.meilisearchEnabled === "boolean") {
+        settings.meilisearchEnabled = record.meilisearchEnabled;
+    }
+
+    if (typeof record.meilisearchHost === "string" && record.meilisearchHost.trim().length > 0) {
+        settings.meilisearchHost = record.meilisearchHost.trim();
+    }
+
+    if (typeof record.meilisearchApiKey === "string") {
+        settings.meilisearchApiKey = record.meilisearchApiKey.trim();
+    } else if (record.meilisearchApiKey === null) {
+        settings.meilisearchApiKey = null;
+    }
+
+    if (typeof record.meilisearchNotesIndex === "string" && record.meilisearchNotesIndex.trim().length > 0) {
+        settings.meilisearchNotesIndex = record.meilisearchNotesIndex.trim();
+    }
+
+    if (typeof record.meilisearchHeadingsIndex === "string" && record.meilisearchHeadingsIndex.trim().length > 0) {
+        settings.meilisearchHeadingsIndex = record.meilisearchHeadingsIndex.trim();
     }
 
     return settings;

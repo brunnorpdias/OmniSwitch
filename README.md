@@ -6,7 +6,7 @@ OmniSwitch is a fast vault‑wide switcher that keeps your keyboard at the cente
 - Limit results on the fly with lightweight prefixes (`/`, `>`, `.`, `#`).
 - Open existing tabs instead of duplicating them, or spawn new panes with `Cmd/Ctrl + Enter`.
 - Browse folders inline with `/ `: drill into directories, open their files, and step back with `Backspace`.
-- Search headings inside notes using the `# ` prefix (desktop builds index them with SQLite FTS).
+- Search headings inside notes using the `# ` prefix (desktop builds stream them into Meilisearch for instant retrieval).
 - Follow the active mode from the pill label beside the input (Notes, Commands, Attachments, Folders).
 - Log the currently open editor leaves to the console for debugging complex layouts.
 
@@ -80,12 +80,12 @@ Headings (desktop)
 ## Architecture Overview
 
 - **Lifecycle:** OmniSwitch waits for Obsidian's layout to finish before wiring up vault listeners or running the heading indexer. This prevents background work from blocking vault startup.
-- **Search engines:** Notes and attachments use Fuse.js with tie-breaking on open frequency and modification time; headings use a SQLite FTS5 database stored under `cache/headings.db` (desktop only).
-- **Incremental indexing:** Each refresh snapshots the vault once, compares `mtime` values with the database, and touches only notes that changed path or timestamp; renamed files first remove the old row to keep FTS clean.
-- **Event filtering:** Vault events are filtered to markdown notes before touching the heading indexer; attachments and other file types bypass the SQLite pipeline entirely.
-- **Modal separation:** `SearchIndex` supplies items for the modal, while `HeadingSearchIndex` runs in the background; the modal listens for completion callbacks so UI updates never block on indexing.
-- **Debug visibility:** With the Debug setting enabled the console reports diff statistics and timings, making it easy to spot long-running refreshes when working on large vaults.
-- **Startup safety:** Refreshes begin only after `workspace.onLayoutReady` fires, so the plugin never blocks Obsidian's “Loading vault…” screen.
+- **Search engines:** Notes and attachments use Fuse.js with tie-breaking on open frequency and modification time; full-text note bodies and headings are indexed into Meilisearch so lookups stay fast even on large vaults.
+- **Incremental indexing:** The plugin walks the vault once, streams documents to Meilisearch in small batches, and yields to the UI every few dozen files to keep Obsidian responsive. Only files whose `mtime` changed are re-uploaded after the initial build.
+- **Event filtering:** Vault events are filtered to markdown notes before touching the Meilisearch queue; attachments and other file types bypass the content index.
+- **Modal separation:** `SearchIndex` supplies items for the modal, while the Meilisearch indexer runs in the background; the modal watches completion tokens so headings appear as soon as the backend is ready.
+- **Debug visibility:** With the Debug setting enabled the console reports streaming progress and Meilisearch task IDs, making it easy to spot long-running refreshes on huge vaults.
+- **Startup safety:** Refreshes begin only after `workspace.onLayoutReady` fires, so the plugin never blocks Obsidian's “Loading vault…” screen. If Meilisearch is offline the plugin falls back to metadata-only search and surfaces a single notice.
 
 ## Settings
 
@@ -136,10 +136,21 @@ Headings (desktop)
 ### Setup
 ```bash
 npm install
-# rebuild better-sqlite3 for the Obsidian Electron runtime
-npm run rebuild-sqlite
-# (inside Obsidian's dev console run `process.versions.electron` to find the exact version)
 ```
+
+### Meilisearch setup (required for headings & full-text)
+1. **Install Meilisearch** (v1.4+ recommended). Choose any of the official binaries or package managers.<br>
+   - macOS (Homebrew): `brew install meilisearch`<br>
+   - Direct download: https://github.com/meilisearch/meilisearch/releases
+2. **Launch the server** with a dedicated data directory:
+   ```bash
+   meilisearch --db-path ~/meili-data --http-addr 127.0.0.1:7700 --master-key "omniswitch"
+   ```
+   Leave this terminal running while you use OmniSwitch. You can pick any host, port, or key—just mirror it in the plugin settings.
+3. **Point OmniSwitch at the server** under *Settings → OmniSwitch → Meilisearch* and press **Apply & Rebuild**. The rebuild runs in the background; headings and note content appear as soon as it completes.
+4. **Mobile fallback:** When Meilisearch is unreachable (or disabled) the plugin stays usable with file/command/attachment search only.
+
+> Tip: If Meilisearch refuses to start because of an older data directory, supply a fresh `--db-path` or follow the official migration guide linked in the error message.
 
 ### Available scripts
 | Command | Description |
@@ -149,7 +160,7 @@ npm run rebuild-sqlite
 | `npm run test` | Execute unit tests with Vitest. |
 | `npm run version` | Bump plugin + manifest versions (uses `scripts/version-bump.mjs`). |
 
-> **Note:** The headings index relies on `better-sqlite3`, which must be rebuilt for the Electron version that ships with your Obsidian build (see the `rebuild` command above). The generated `cache/headings.db` is desktop-only; mobile builds fall back to note search.
+> **Note:** OmniSwitch now relies on Meilisearch for full note and heading search. Point the plugin at a running Meilisearch instance (default `http://127.0.0.1:7700`) inside the settings tab; mobile builds fall back to metadata-only search if the service is unavailable.
 
 Place the repository inside your vault under `.obsidian/plugins/omniswitch` for live testing. After `npm run build`, enable the plugin in **Settings → Community Plugins**.
 
@@ -162,3 +173,9 @@ Place the repository inside your vault under `.obsidian/plugins/omniswitch` for 
 ## License
 
 MIT © OmniSwitch contributors.
+
+## Disclosures
+
+- OmniSwitch’s full experience isn’t plug-and-play—you must run a local (or remote) Meilisearch server. Without it, headings and deep note content are unavailable.
+- When Meilisearch is running, indexing streams in the background, yielding real-time, fuzzy, typo-tolerant search over entire notes and their headings.
+- The plugin never uploads vault content; the Meilisearch process you run is entirely under your control.

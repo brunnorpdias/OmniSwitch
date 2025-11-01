@@ -15,7 +15,7 @@ import {
 } from "obsidian";
 import Fuse from "fuse.js";
 import type { SearchItem, FileSearchItem, FolderSearchItem, HeadingSearchItem } from "./search/types";
-import type { HeadingSearchIndex } from "./headings";
+import type { HeadingDocument, MeilisearchIndex, NoteDocument, SearchHit } from "./search/meilisearch-index";
 import { getCommandManager } from "./obsidian-helpers";
 import {
 	collectFileLeaves,
@@ -37,7 +37,7 @@ export interface OmniSwitchModalOptions {
     debug?: boolean;
     maxSuggestions?: number;
     engineTopPercent?: number;
-    headingSearch?: HeadingSearchIndex | null;
+    contentSearch?: MeilisearchIndex | null;
 }
 
 type ItemSupplier = () => SearchItem[];
@@ -45,7 +45,7 @@ type ItemSupplier = () => SearchItem[];
 export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 	private mode: OmniSwitchMode;
 	private extensionFilter: string | null;
-	private headingSearch: HeadingSearchIndex | null;
+	private contentSearch: MeilisearchIndex | null;
 	private readonly initialQuery: string;
 	private isProgrammaticInput = false;
 	private pendingNewLeaf = false;
@@ -56,6 +56,17 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
     private debug = false;
     private maxSuggestions: number | undefined;
     private engineTopPercent: number | undefined;
+    private fileLookup = new Map<string, FileSearchItem>();
+    private noteRequestToken = 0;
+    private noteQuery = "";
+    private pendingNoteQuery: string | null = null;
+    private noteMatches: FuzzyMatch<SearchItem>[] = [];
+    private headingRequestToken = 0;
+    private headingQuery = "";
+    private pendingHeadingQuery: string | null = null;
+    private headingMatches: FuzzyMatch<SearchItem>[] = [];
+    private noteError: string | null = null;
+    private headingError: string | null = null;
 
 	private readonly handleInput = (_event: Event): void => {
 		if (this.isProgrammaticInput) {
@@ -83,6 +94,13 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		// When the user types normally, ensure the current mode styling stays in sync.
 		this.updateModeUI();
 		this.updateModeLabel();
+
+        const trimmed = this.inputEl.value.trim();
+        if (this.mode === "files" && this.contentSearch) {
+            this.requestNoteSuggestions(trimmed);
+        } else if (this.mode === "headings" && this.contentSearch) {
+            this.requestHeadingSuggestions(trimmed);
+        }
 	};
 
 	private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -150,7 +168,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
         super(app);
         this.mode = options.initialMode ?? "files";
         this.extensionFilter = options.extensionFilter ?? null;
-        this.headingSearch = options.headingSearch ?? null;
+        this.contentSearch = options.contentSearch ?? null;
         this.initialQuery = options.initialQuery ?? "";
         this.debug = options.debug === true;
         if (options.excludedPaths) {
@@ -175,6 +193,12 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		this.inputEl.addEventListener("keydown", this.handleKeyDown, true);
 
 		this.updateModeUI();
+        const initial = this.initialQuery.trim();
+        if (this.mode === "files" && this.contentSearch) {
+            this.requestNoteSuggestions(initial);
+        } else if (this.mode === "headings" && this.contentSearch) {
+            this.requestHeadingSuggestions(initial);
+        }
 		window.setTimeout(() => this.refreshSuggestions(), 0);
 	}
 
@@ -186,33 +210,10 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		super.onClose();
 	}
 
-	public handleHeadingIndexReady(): void {
-		if (this.debug) {
-			console.info("OmniSwitch: heading index ready");
-		}
-		window.setTimeout(() => {
-			if (!this.headingSearch) {
-				return;
-			}
-			this.updateModeUI();
-			if (this.mode === "headings") {
-				this.refreshSuggestions();
-			}
-		}, 0);
-	}
-
-	public handleHeadingIndexError(error: unknown): void {
-		if (this.debug) {
-			console.warn("OmniSwitch: heading index error", error);
-		}
-		if (this.mode === "headings") {
-			new Notice("Heading search failed to refresh. Showing cached results.");
-		}
-		this.updateModeUI();
-	}
-
 	getItems(): SearchItem[] {
-		return this.supplyItems();
+		const items = this.supplyItems();
+		this.rebuildFileLookup(items);
+		return items;
 	}
 
     getSuggestions(query: string): FuzzyMatch<SearchItem>[] {
@@ -222,12 +223,13 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
         if (this.mode === "directories") {
             return this.getDirectorySuggestions(query);
         }
+
         const items = this.filterItems(this.getItems(), this.mode, this.extensionFilter)
             .filter((it) => (it.type !== "file" || !this.isExcluded(it.file.path))
                         && (it.type !== "folder" || !this.isExcluded(this.folderPath(it.folder))));
+
         const trimmedLeading = query.trimStart();
         if (this.mode === "files") {
-            // prevent half-typed attachment prefix from showing normal results
             if (trimmedLeading.startsWith(".") && !trimmedLeading.startsWith(". ") && !/^\.[^ ]+ /.test(trimmedLeading)) {
                 return [];
             }
@@ -248,6 +250,10 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
         if (this.mode === "files" && effectiveQuery.length === 0) {
             const home = this.collectHomeFileSuggestions(this.maxSuggestions ?? 20);
             if (home.length > 0) return home;
+        }
+
+        if (this.mode === "files" && this.contentSearch) {
+            return this.getNoteSuggestions(effectiveQuery);
         }
 
 		if (effectiveQuery.length === 0) {
@@ -294,22 +300,43 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 		return matches;
 	}
 
-	private getHeadingSuggestions(query: string): FuzzyMatch<SearchItem>[] {
-		const provider = this.headingSearch;
-		const status = provider?.status;
-		if (!provider || !status || !status.ready || !status.indexed) {
-			return [];
-		}
-		const trimmed = query.trim();
-		if (trimmed.length < 2) {
-			return [];
-		}
-		const results = provider.search(trimmed, { limit: this.maxSuggestions ?? 20 });
-		if (results.length === 0) {
-			return [];
-		}
-		return results.map((item) => ({ item, match: this.createScoreMatch(item.score) }));
-	}
+    private getHeadingSuggestions(query: string): FuzzyMatch<SearchItem>[] {
+        if (!this.contentSearch) {
+            return [];
+        }
+        const trimmed = query.trim();
+        if (trimmed.length === 0) {
+            this.headingMatches = [];
+            this.headingQuery = trimmed;
+            return [];
+        }
+        if (this.headingQuery !== trimmed && this.pendingHeadingQuery !== trimmed) {
+            this.requestHeadingSuggestions(trimmed);
+        }
+        if (this.headingQuery === trimmed) {
+            return this.headingMatches;
+        }
+        return [];
+    }
+
+    private getNoteSuggestions(query: string): FuzzyMatch<SearchItem>[] {
+        if (!this.contentSearch) {
+            return [];
+        }
+        const trimmed = query.trim();
+        if (trimmed.length < 2) {
+            this.noteMatches = [];
+            this.noteQuery = trimmed;
+            return [];
+        }
+        if (this.noteQuery !== trimmed && this.pendingNoteQuery !== trimmed) {
+            this.requestNoteSuggestions(trimmed);
+        }
+        if (this.noteQuery === trimmed) {
+            return this.noteMatches;
+        }
+        return [];
+    }
 
 	getItemText(item: SearchItem): string {
         switch (item.type) {
@@ -323,6 +350,15 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
                 return `${item.file.path}#${item.slug}`;
         }
 	}
+
+    private rebuildFileLookup(items: SearchItem[]): void {
+        this.fileLookup.clear();
+        for (const item of items) {
+            if (item.type === "file") {
+                this.fileLookup.set(item.file.path, item);
+            }
+        }
+    }
 
 	private sortDirectoryItems(items: SearchItem[]): SearchItem[] {
 		return [...items].sort((a, b) => {
@@ -477,8 +513,7 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			}
 			case "heading": {
 				title.setText(item.heading);
-				const lineLabel = `#${item.line + 1}`;
-				subtitle.setText(`${item.file.path} ${lineLabel}`);
+				subtitle.setText(item.file.path);
 				break;
 			}
 			
@@ -578,6 +613,13 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 			this.directoryStack = [];
 		}
 		this.updateModeLabel();
+        const trimmed = this.inputEl.value.trim();
+        if (next === "files" && this.contentSearch) {
+            this.requestNoteSuggestions(trimmed);
+        }
+        if (next === "headings" && this.contentSearch) {
+            this.requestHeadingSuggestions(trimmed);
+        }
 	}
 
 	private exitDirectoryLevel(clearQuery: boolean): void {
@@ -651,30 +693,29 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
         this.applyModeClass();
 
 		switch (this.mode) {
-			case "files":
-				this.setPlaceholder("Search vault…");
-				this.setInstructions(this.defaultInstructions());
-				this.emptyStateText = "No files found";
-				break;
+		case "files":
+			this.setPlaceholder("Search vault…");
+			this.setInstructions(this.defaultInstructions());
+			this.emptyStateText = this.contentSearch && this.noteError ? this.noteError : "No files found";
+			break;
 			case "commands":
 				this.setPlaceholder("Search commands");
 				this.setInstructions([{ command: "enter", purpose: "run" }]);
 				this.emptyStateText = "No commands found";
 				break;
 		case "headings": {
-			const status = this.headingSearch?.status;
-			if (!this.headingSearch || status?.supported === false) {
+			if (!this.contentSearch) {
 				this.setPlaceholder("Heading search unavailable");
 				this.setInstructions([{ command: "esc", purpose: "cancel" }]);
-				this.emptyStateText = "Heading search requires desktop & SQLite.";
-			} else if (!status || !status.indexed) {
-				this.setPlaceholder("Building heading index…");
+				this.emptyStateText = "Configure Meilisearch to search headings.";
+			} else if (this.headingError) {
+				this.setPlaceholder("Heading search error");
 				this.setInstructions([{ command: "esc", purpose: "cancel" }]);
-				this.emptyStateText = "Indexing headings…";
-			} else if (status.refreshing) {
-				this.setPlaceholder("Refreshing headings…");
+				this.emptyStateText = this.headingError;
+			} else if (this.pendingHeadingQuery) {
+				this.setPlaceholder("Searching headings…");
 				this.setInstructions(this.openInstructions());
-				this.emptyStateText = "Updating headings…";
+				this.emptyStateText = "Searching…";
 			} else {
 				this.setPlaceholder("Search headings (# )");
 				this.setInstructions(this.openInstructions());
@@ -805,6 +846,194 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
                     return isNoteExtension(item.file.extension);
                 });
         }
+    }
+
+    private requestNoteSuggestions(query: string): void {
+        if (!this.contentSearch) {
+            return;
+        }
+        const trimmed = query.trim();
+        if (trimmed.length < 2) {
+            this.noteMatches = [];
+            this.noteQuery = trimmed;
+            this.pendingNoteQuery = null;
+            return;
+        }
+        this.pendingNoteQuery = trimmed;
+        const token = ++this.noteRequestToken;
+        const topPercent = Math.max(10, Math.min(50, this.engineTopPercent ?? 20));
+        void this.contentSearch
+            .searchNotes(trimmed, {
+                limit: this.maxSuggestions ?? 20,
+                topPercent,
+            })
+            .then((hits) => {
+                if (token !== this.noteRequestToken) return;
+                this.noteMatches = this.mapNoteResults(hits);
+                this.noteQuery = trimmed;
+                this.pendingNoteQuery = null;
+                this.noteError = null;
+                this.refreshSuggestions();
+            })
+            .catch((error) => {
+                if (token !== this.noteRequestToken) return;
+                this.noteMatches = [];
+                this.noteQuery = trimmed;
+                this.pendingNoteQuery = null;
+                this.noteError = error instanceof Error ? error.message : String(error);
+                if (this.debug) {
+                    console.warn("OmniSwitch: note search failed", error);
+                }
+                this.refreshSuggestions();
+            });
+    }
+
+    private requestHeadingSuggestions(query: string): void {
+        if (!this.contentSearch) {
+            return;
+        }
+        const trimmed = query.trim();
+        if (trimmed.length === 0) {
+            this.headingMatches = [];
+            this.headingQuery = trimmed;
+            this.pendingHeadingQuery = null;
+            return;
+        }
+        this.pendingHeadingQuery = trimmed;
+        const token = ++this.headingRequestToken;
+        const activePath = this.app.workspace.getActiveFile()?.path ?? null;
+        void this.contentSearch
+            .searchHeadings(trimmed, {
+                limit: this.maxSuggestions ?? 20,
+                activePath,
+            })
+            .then((hits) => {
+                if (token !== this.headingRequestToken) return;
+                this.headingMatches = this.mapHeadingResults(hits);
+                this.headingQuery = trimmed;
+                this.pendingHeadingQuery = null;
+                this.headingError = null;
+                this.refreshSuggestions();
+            })
+            .catch((error) => {
+                if (token !== this.headingRequestToken) return;
+                this.headingMatches = [];
+                this.headingQuery = trimmed;
+                this.pendingHeadingQuery = null;
+                this.headingError = error instanceof Error ? error.message : String(error);
+                if (this.debug) {
+                    console.warn("OmniSwitch: heading search failed", error);
+                }
+                this.refreshSuggestions();
+            });
+    }
+
+    private mapNoteResults(hits: Array<SearchHit<NoteDocument>>): FuzzyMatch<SearchItem>[] {
+        if (hits.length === 0) {
+            return [];
+        }
+        const freqMap = (this as unknown as { frequencyMap?: Record<string, number> }).frequencyMap ?? {};
+        const freqWeight = (this as unknown as { freqBoost?: number }).freqBoost ?? 0.7;
+        const recencyWeight = (this as unknown as { modifiedBoost?: number }).modifiedBoost ?? 0.3;
+        const rows: Array<{ file: TFile; score: number; freq: number; mtime: number }> = [];
+        for (const hit of hits) {
+            const doc = hit.document;
+            const existing = this.fileLookup.get(doc.path);
+            let file: TFile | null = existing?.file ?? null;
+            if (!file) {
+                const abstract = this.app.vault.getAbstractFileByPath(doc.path);
+                if (abstract instanceof TFile) {
+                    file = abstract;
+                }
+            }
+            if (!file) continue;
+            if (this.isExcluded(file.path)) continue;
+            const stat = (file as unknown as { stat?: { mtime?: number } }).stat ?? {};
+            const mtime = typeof stat.mtime === "number" ? stat.mtime : doc.modified;
+            const freq = freqMap[file.path] ?? 0;
+            const score = Number.isFinite(hit.score) ? hit.score : 0;
+            rows.push({ file, score, freq, mtime });
+        }
+        if (rows.length === 0) {
+            return [];
+        }
+
+        const bands = new Map<number, Array<{ file: TFile; score: number; freq: number; mtime: number }>>();
+        for (const row of rows) {
+            const key = Math.floor(row.score * 100) / 100;
+            const bucket = bands.get(key) ?? [];
+            bucket.push(row);
+            bands.set(key, bucket);
+        }
+
+        const orderedBandKeys = Array.from(bands.keys()).sort((a, b) => b - a);
+        const ranked: Array<{ file: TFile; score: number }> = [];
+        for (const key of orderedBandKeys) {
+            const group = bands.get(key)!;
+            if (group.length <= 1) {
+                ranked.push(...group.map((entry) => ({ file: entry.file, score: entry.score })));
+                continue;
+            }
+            const freqValues = group.map((entry) => entry.freq);
+            const mtimeValues = group.map((entry) => entry.mtime);
+            const freqMin = Math.min(...freqValues);
+            const freqMax = Math.max(...freqValues);
+            const mtimeMin = Math.min(...mtimeValues);
+            const mtimeMax = Math.max(...mtimeValues);
+            group.sort((a, b) => {
+                const freqRange = freqMax - freqMin || 1;
+                const recencyRange = mtimeMax - mtimeMin || 1;
+                const normFreqA = (a.freq - freqMin) / freqRange;
+                const normFreqB = (b.freq - freqMin) / freqRange;
+                const normRecentA = (a.mtime - mtimeMin) / recencyRange;
+                const normRecentB = (b.mtime - mtimeMin) / recencyRange;
+                const scoreA = a.score + normFreqA * freqWeight + normRecentA * recencyWeight;
+                const scoreB = b.score + normFreqB * freqWeight + normRecentB * recencyWeight;
+                if (scoreA !== scoreB) {
+                    return scoreB - scoreA;
+                }
+                return a.file.path.localeCompare(b.file.path);
+            });
+            ranked.push(...group.map((entry) => ({ file: entry.file, score: entry.score })));
+        }
+
+        const keepPercent = this.engineTopPercent ?? 20;
+        const keepCount = Math.max(
+            1,
+            Math.min(ranked.length, Math.ceil((ranked.length * keepPercent) / 100)),
+        );
+        return ranked.slice(0, keepCount).map((entry) => {
+            const item: FileSearchItem = { type: "file", file: entry.file };
+            return { item, match: this.createScoreMatch(entry.score) };
+        });
+    }
+
+    private mapHeadingResults(hits: Array<SearchHit<HeadingDocument>>): FuzzyMatch<SearchItem>[] {
+        const matches: FuzzyMatch<SearchItem>[] = [];
+        for (const hit of hits) {
+            const doc = hit.document;
+            const existing = this.fileLookup.get(doc.path);
+            let file: TFile | null = existing?.file ?? null;
+            if (!file) {
+                const abstract = this.app.vault.getAbstractFileByPath(doc.path);
+                if (abstract instanceof TFile) {
+                    file = abstract;
+                }
+            }
+            if (!file) continue;
+            if (this.isExcluded(file.path)) continue;
+            const heading: HeadingSearchItem = {
+                type: "heading",
+                file,
+                heading: doc.heading,
+                slug: doc.slug,
+                line: doc.line,
+                level: doc.level,
+                score: hit.score,
+            };
+            matches.push({ item: heading, match: this.createScoreMatch(hit.score) });
+        }
+        return matches;
     }
 
     // --- Fuse.js integration (notes + attachments) ---
@@ -1133,7 +1362,8 @@ export class OmniSwitchModal extends FuzzySuggestModal<SearchItem> {
 
 	private getExtensionLabel(item: SearchItem): string | null {
 		if (item.type === "heading") {
-			return `H${Math.max(1, item.level || 1)}`;
+			const level = Math.max(1, item.level || 1);
+			return `H${level}`;
 		}
 		if (item.type !== "file") {
 			return null;
